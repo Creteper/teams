@@ -81,7 +81,7 @@ backend/
 | `TEAMS_PUBLIC_BASE_URL` | `http://127.0.0.1:8090` | 生成 webhook payload 里的绝对 URL |
 | `TEAMS_DATABASE_URL` | — | `postgres://teams_app:<DB_PASSWORD>@127.0.0.1:5432/teams_dev?sslmode=disable` |
 | `TEAMS_TEST_DATABASE_URL` | — | 集成测试库 `teams_test`（只被 `go test` 使用） |
-| `TEAMS_SECRET_KEY` | — | ≥32 字节随机（`openssl rand -base64 48`），丢失则 webhook 密钥无法解密、附件签名失效 |
+| `TEAMS_SECRET_KEY` | — | 正好 32 字节随机，base64 编码（`openssl rand -base64 32`），丢失则 webhook 密钥无法解密、附件签名失效 |
 | `TEAMS_UPLOAD_DIR` | `./data/uploads` | |
 | `TEAMS_CORS_ORIGINS` | `http://localhost:5190,http://127.0.0.1:5190` | 逗号分隔；同时用于 WS Origin 校验 |
 | `TEAMS_WEBHOOK_ALLOW_INSECURE_LOCAL` | `false` | 仅 `TEAMS_ENV=dev` 生效：允许 http 和本机/内网 webhook 与头像地址 |

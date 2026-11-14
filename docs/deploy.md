@@ -126,11 +126,11 @@ CREATE ROLE teams_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD :'pw';
 CREATE DATABASE teams OWNER teams_app ENCODING 'UTF8' TEMPLATE template0;
 REVOKE ALL ON DATABASE teams FROM PUBLIC;
 SQL
-sudo systemctl restart postgresql && sudo ss -ltnp | grep 5432   # 只应看到 127.0.0.1 / ::1
+sudo systemctl restart postgresql@18-main && sudo ss -ltnp | grep 5432   # 只应看到 127.0.0.1 / ::1
 ```
 表结构由后端启动时自动迁移，无需手工建表。
 
-小内存配置（本机 1.6 GB 且与 MySQL/Redis/Node 共用），写入 `/etc/postgresql/18/main/conf.d/teams-small.conf` 后 `sudo systemctl restart postgresql`：
+小内存配置（本机 1.6 GB 且与 MySQL/Redis/Node 共用），写入 `/etc/postgresql/18/main/conf.d/teams-small.conf` 后 `sudo systemctl restart postgresql@18-main`（Ubuntu 上实际的 unit 名）：
 ```
 shared_buffers = 128MB
 effective_cache_size = 384MB
@@ -153,7 +153,7 @@ TEAMS_ENV=production
 TEAMS_HTTP_ADDR=127.0.0.1:8090
 TEAMS_PUBLIC_BASE_URL=https://teams.lovekaifa.com
 TEAMS_DATABASE_URL=postgres://teams_app:${DB_PASSWORD}@127.0.0.1:5432/teams?sslmode=disable
-TEAMS_SECRET_KEY=$(openssl rand -base64 48 | tr -d '\n')
+TEAMS_SECRET_KEY=$(openssl rand -base64 32 | tr -d '\n')   # 必须正好 32 字节；用 48 会报 "must be 32 bytes" 启动失败
 TEAMS_UPLOAD_DIR=/var/lib/teams/uploads
 TEAMS_CORS_ORIGINS=https://teams.lovekaifa.com
 TEAMS_WEBHOOK_ALLOW_INSECURE_LOCAL=false
@@ -193,9 +193,9 @@ shasum -a 256 bin/teams-server-linux-amd64
 ```ini
 [Unit]
 Description=TeAms backend
-After=network-online.target postgresql.service
+After=network-online.target postgresql@18-main.service
 Wants=network-online.target
-Requires=postgresql.service
+Requires=postgresql@18-main.service
 
 [Service]
 Type=simple
@@ -329,8 +329,8 @@ server {
         proxy_set_header CF-Connecting-IP "";
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $teams_connection_upgrade;
-        proxy_read_timeout 1h;
-        proxy_send_timeout 1h;
+        proxy_read_timeout 120s;     # 前端每 25 秒 ping 一次，120s 足够；与线上一致
+        proxy_send_timeout 120s;
         proxy_buffering off;
     }
 
@@ -453,7 +453,7 @@ sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy
 前端在开发机构建（由 Tina 负责前端代码；API 使用同域相对路径 `/api/v1`，WS 用 `wss://<当前域名>/api/v1/ws`）：
 ```bash
 cd frontend && pnpm install --frozen-lockfile && pnpm build   # 产物 dist/；只用 Tina 在群里报的可部署 commit 构建
-tar -C dist -czf ../teams-frontend-$(git rev-parse --short HEAD).tar.gz .
+COPYFILE_DISABLE=1 tar -C dist -czf ../teams-frontend-$(git rev-parse --short HEAD).tar.gz .
 ```
 
 ### B.9 发布流程
@@ -501,7 +501,8 @@ DIR=/var/backups/teams
 KEEP_DAYS=14
 
 # 1) 数据库：本机 peer 认证，不需要口令
-sudo -u postgres pg_dump -Fc -d teams -f "$DIR/teams-db-$TS.dump"
+# 由 root 重定向输出：postgres 用户写不进 root 700 的 $DIR
+sudo -u postgres pg_dump -Fc -d teams > "$DIR/teams-db-$TS.dump"
 
 # 2) 上传目录
 tar -C /var/lib/teams -czf "$DIR/teams-uploads-$TS.tar.gz" uploads
@@ -509,15 +510,23 @@ tar -C /var/lib/teams -czf "$DIR/teams-uploads-$TS.tar.gz" uploads
 # 3) 本地保留 14 天
 find "$DIR" -type f -mtime +$KEEP_DAYS -delete
 
-# 4) 异地（可选，用户提供 OSS 后再启用）：同步到阿里云 OSS（另一地域、私有 Bucket、开启版本控制），
-#    凭据放在 /root/.ossutilconfig（600），使用只允许写该 Bucket 的 RAM 子账号 AccessKey。
-#    未配置时只做本机备份；异地同步失败只记日志，不让整次备份失败。
-OSS_BUCKET=""   # 例如 oss://<BACKUP_BUCKET>/teams/ ，留空表示不做异地
-if [ -n "$OSS_BUCKET" ] && command -v ossutil >/dev/null && [ -f /root/.ossutilconfig ]; then
-  ossutil cp -r "$DIR" "$OSS_BUCKET" --update || echo "WARN: OSS sync failed" >&2
+# 4) 异地：上传到阿里云 OSS（只传本次的两个文件）
+#    存储桶 lovekaifa（cn-beijing，内网 endpoint），前缀 teams-backups/。
+#    凭据：/etc/teams/backup-oss.env（root，600），内容复制自服务器上爱开发的
+#    /opt/lovekaifa/shared/aliyun-credentials.env（变量 ALIBABA_CLOUD_ACCESS_KEY_ID / _SECRET），通过环境变量交给 ossutil。
+#    ⚠️ 存储桶本身是 public-read，必须带 --acl private，否则备份会被匿名读到。
+#    上传失败只记告警，不让整次备份失败（本机备份已完成）。
+#    下面是结构示意，具体的环境变量映射和 ossutil 参数以服务器上实际的 /usr/local/bin/teams-backup.sh 为准。
+OSS_DEST="oss://lovekaifa/teams-backups/"
+if [ -f /etc/teams/backup-oss.env ] && command -v ossutil >/dev/null; then
+  ( set -a; . /etc/teams/backup-oss.env; set +a
+    for f in "$DIR/teams-db-$TS.dump" "$DIR/teams-uploads-$TS.tar.gz"; do
+      ossutil cp "$f" "$OSS_DEST" --acl private --region cn-beijing \
+        --endpoint oss-cn-beijing-internal.aliyuncs.com || echo "WARN: OSS upload failed: $f" >&2
+    done ) || true
 fi
 ```
-（也可换成 `rclone` 同步到其它对象存储；OSS 侧配置生命周期规则保留 90 天。）
+上传后用 `ossutil stat oss://lovekaifa/teams-backups/<文件名>` 确认 ACL 是 private，匿名访问应返回 403。`teams-backups/` 的 OSS 生命周期规则（自动清理旧备份）要改存储桶设置，**待用户决定**，目前未配置。
 
 `/etc/systemd/system/teams-backup.service` 与 `.timer`：
 ```ini
