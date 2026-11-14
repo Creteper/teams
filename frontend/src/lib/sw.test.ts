@@ -45,7 +45,7 @@ describe("Service Worker（public/sw.js）", () => {
       body: "@Alice 看一下",
       tag: "mention:m1",
       icon: "/api/v1/avatars/a",
-      badge: "/icons/icon-192.png",
+      badge: "/icons/badge-72.png",
       data: { url: "/teams/t1/channels/c1?msg=m1" },
     });
   });
@@ -76,5 +76,15 @@ describe("Service Worker（public/sw.js）", () => {
     const { sw, self } = loadSw([{ url: "https://other.example/", focused: true }]);
     await sw.handleNotificationClick({ notification: { close: vi.fn(), data: { url: payload.url } } });
     expect(self.clients.openWindow).toHaveBeenCalledWith("http://localhost:5190/teams/t1/channels/c1?msg=m1");
+  });
+});
+
+describe("badge-72.png：透明底、单色白剪影", () => {
+  it("文件存在，72×72 RGBA PNG", () => {
+    const buf = readFileSync(resolve(process.cwd(), "public/icons/badge-72.png"));
+    expect(buf.subarray(1, 4).toString()).toBe("PNG");
+    expect(buf.readUInt32BE(16)).toBe(72);
+    expect(buf.readUInt32BE(20)).toBe(72);
+    expect(buf[25]).toBe(6); // color type 6 = RGBA
   });
 });

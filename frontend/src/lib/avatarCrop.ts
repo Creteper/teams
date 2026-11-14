@@ -1,3 +1,4 @@
+import { errorText } from "./errorText";
 /**
  * 用户头像（§10.1）：只接受 jpeg / png / gif / webp（服务端嗅探），≤ 5 MB，宽高 ≤ 4096；服务端不裁剪不缩放。
  * 前端先裁成正方形再上传。这里放纯函数（校验、嗅探、裁剪几何），canvas 绘制在 AvatarCropDialog 里。
@@ -108,6 +109,8 @@ export function avatarDimError(width: number, height: number): string | null {
   return null;
 }
 
+const zh = (m: string | undefined, fallback: string) => (m && /[\u4e00-\u9fff]/.test(m) ? m : fallback);
+
 /** PUT /me/avatar 失败 → 中文提示（§1、§10.1 的错误码） */
 export function avatarUploadErrorText(e: unknown): string {
   const err = e as { status?: number; code?: string; message?: string; details?: Record<string, unknown> } | null;
@@ -115,9 +118,9 @@ export function avatarUploadErrorText(e: unknown): string {
     if (err.status === 413) return "图片不能超过 5 MB";
     if (err.status === 415) return "只支持 jpg、png、gif、webp 格式的图片（文件可能已损坏）";
     if (err.status === 400 && err.details?.field === "avatar")
-      return /4096/.test(err.message ?? "") ? `图片尺寸不能超过 ${AVATAR_MAX_DIM}×${AVATAR_MAX_DIM}` : `图片无效：${err.message ?? "请换一张"}`;
+      return /4096/.test(err.message ?? "") ? `图片尺寸不能超过 ${AVATAR_MAX_DIM}×${AVATAR_MAX_DIM}` : `图片无效：${zh(err.message, "请换一张")}`;
     if (err.status === 0) return "网络异常，请稍后再试";
-    return err.message ?? "上传失败";
+    return zh(err.message, "上传失败");
   }
-  return e instanceof Error ? e.message : String(e);
+  return errorText(e, "上传失败");
 }

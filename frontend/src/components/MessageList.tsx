@@ -251,7 +251,10 @@ export function MessageList({
                 ) : null}
                 {row.deleted ? <p className="text-sm italic text-[#949ba4]">（消息已删除）</p> : null}
                 {!row.deleted && row.content ? (
-                  <p className="whitespace-pre-wrap break-words py-0.5 text-[15px] leading-relaxed text-[#dbdee1]">
+                  <p
+                    data-testid="message-content"
+                    className={`whitespace-pre-wrap break-words py-0.5 text-[15px] leading-relaxed ${ob?.status === "sending" ? "text-[#949ba4]" : "text-[#dbdee1]"}`}
+                  >
                     {parseContent(row.content, (id) => row.mentionNames.get(id) ?? byId.get(id)?.display_name).map((part, k) =>
                       part.type === "mention" ? (
                         <span
@@ -290,13 +293,13 @@ export function MessageList({
                       <span>发送中…</span>
                     </p>
                   ) : (
-                    <p className="flex flex-wrap items-center gap-2 text-xs text-[#f23f43]" role="alert">
+                    <p className="flex flex-wrap items-center gap-1 text-xs text-[#f23f43]" role="alert">
                       <span aria-hidden="true">⚠</span>
-                      <span>发送失败{ob.error ? `：${ob.error}` : ""}</span>
-                      <Button variant="ghost" size="sm" className={`${TEXT_BUTTON} text-brand-light`} onPress={() => onRetrySend?.(ob.local_id)}>
+                      <span className="mr-1">发送失败{ob.error ? `：${ob.error}` : ""}</span>
+                      <Button variant="ghost" size="sm" className={`${FAIL_BUTTON} text-brand-light`} data-testid="send-retry" onPress={() => onRetrySend?.(ob.local_id)}>
                         重试
                       </Button>
-                      <Button variant="ghost" size="sm" className={`${TEXT_BUTTON} text-[#b5bac1]`} onPress={() => onDiscard?.(ob.local_id)}>
+                      <Button variant="ghost" size="sm" className={`${FAIL_BUTTON} text-[#b5bac1]`} data-testid="send-discard" onPress={() => onDiscard?.(ob.local_id)}>
                         删除
                       </Button>
                     </p>
@@ -363,6 +366,10 @@ export function MessageList({
 /** 行内文字按钮（重试 / 删除 / 加载更早）：HeroUI Button 去掉高度、内边距和底色，看起来和原来的文字链接一样 */
 const TEXT_BUTTON =
   "h-auto min-h-0 min-w-0 rounded-none bg-transparent p-0 text-xs font-semibold hover:bg-transparent hover:underline data-[hovered=true]:bg-transparent data-[pressed=true]:scale-100";
+
+/** 发送失败后的「重试」「删除」：点击区域加大（28px 高、左右 10px 内边距），悬停有浅底色 */
+const FAIL_BUTTON =
+  "h-7 min-h-7 min-w-0 rounded-md bg-transparent px-2.5 text-xs font-semibold hover:bg-white/[0.06] data-[hovered=true]:bg-white/[0.06] data-[pressed=true]:scale-100";
 
 const NO_KEYS: Record<string, string> = {};
 

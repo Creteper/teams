@@ -1,3 +1,4 @@
+import { errorText } from "../lib/errorText";
 import { Button, CloseButton, ProgressBar, TextArea } from "@heroui/react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Attachment, Member } from "../api/types";
@@ -136,7 +137,7 @@ export function Composer({
       if (typeof URL.createObjectURL === "function") previewsRef.current[a.id] = URL.createObjectURL(file);
       setAttachments((prev) => [...prev, a]);
     } catch (e) {
-      if (!(e instanceof DOMException && e.name === "AbortError")) setError(e instanceof Error ? e.message : String(e));
+      if (!(e instanceof DOMException && e.name === "AbortError")) setError(errorText(e));
     } finally {
       setUploads((prev) => prev.filter((u) => u.key !== key));
     }

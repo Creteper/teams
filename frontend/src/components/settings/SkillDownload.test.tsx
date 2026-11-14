@@ -56,6 +56,13 @@ describe("设置 → Skill 下载", () => {
     expect(screen.getByTestId("skill-download-md").getAttribute("download")).toBe("SKILL.md");
     expect(screen.getByTestId("skill-download-tgz").getAttribute("href")).toBe(INFO.tgz_url);
     expect(screen.getByTestId("skill-preview").textContent).toContain("TeAms Bot 接入");
+    // 只有一层滚动：预览框不限高、不自带滚动
+    expect(screen.getByTestId("skill-preview").className).not.toMatch(/max-h|overflow/);
+    // 小标题不做大写转换
+    expect(screen.getByText("SKILL.md 预览").className).not.toContain("uppercase");
+    // 安装命令换行显示，不截断
+    expect(screen.getByTestId("skill-install-command").className).toContain("whitespace-pre-wrap");
+    expect(screen.getByTestId("skill-sha256").className).toContain("text-[#b5bac1]");
   });
 
   it("复制安装命令：写入剪贴板并提示已复制", async () => {

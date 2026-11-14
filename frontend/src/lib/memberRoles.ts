@@ -1,3 +1,4 @@
+import { errorText } from "./errorText";
 import { ApiError } from "../api/errors";
 import type { Member, Team } from "../api/types";
 
@@ -73,8 +74,8 @@ export function roleChangeErrorText(err: unknown, action: RoleAction, name: stri
     if (err.status === 0) return `${what}：网络异常，请稍后再试`;
     if (err.status === 403) return `${what}：你没有权限修改这个成员的角色`;
     if (err.status === 404) return `${what}：该成员不存在或已离开 team`;
-    if (err.code === "rate_limited") return `${what}：${err.message}`;
-    return `${what}：${err.message}${err.requestId ? `（请求编号 ${err.requestId}）` : ""}`;
+    if (err.code === "rate_limited") return `${what}：${errorText(err)}`;
+    return `${what}：${errorText(err)}${err.requestId && !errorText(err).includes(err.requestId) ? `（请求编号 ${err.requestId}）` : ""}`;
   }
   return `${what}：网络异常，请稍后再试`;
 }

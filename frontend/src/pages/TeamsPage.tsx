@@ -7,18 +7,18 @@ import { TeamRail } from "../components/TeamRail";
 import { TeamIcon } from "../components/TeamIcon";
 import { useTeams } from "../hooks";
 import { LogoWordmark } from "../components/Logo";
-import { ConfirmDialog } from "../components/ui";
+import { GearIcon } from "../components/ui";
+import { MemberAvatar } from "../components/MemberAvatar";
 import { roleLabel } from "../lib/roles";
 import { SettingsDialog } from "../components/settings/SettingsDialog";
 
 /** Team 列表 + 创建 + 通过邀请链接加入 */
 export default function TeamsPage() {
   const token = useToken();
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const { teams, loading, reload } = useTeams(token);
   const [dialog, setDialog] = useState(false);
-  const [confirmLogout, setConfirmLogout] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const onCreated = async (team: { id: string }) => {
     await reload();
@@ -27,7 +27,7 @@ export default function TeamsPage() {
 
   return (
     <div className="flex h-full bg-[#313338] text-[#dbdee1]">
-      <TeamRail teams={teams} onAdd={() => setDialog(true)} onSettings={() => setSettingsOpen(true)} />
+      <TeamRail teams={teams} onAdd={() => setDialog(true)} />
       <main className="flex-1 overflow-y-auto p-8">
         <div className="mx-auto max-w-4xl">
           <div className="mb-8 flex items-center justify-between">
@@ -36,14 +36,19 @@ export default function TeamsPage() {
               <span className="h-6 w-px bg-white/10" />
               <h1 className="text-xl font-bold text-white">你好，{user?.display_name}</h1>
             </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              onPress={() => setConfirmLogout(true)}
-              className="h-auto min-h-0 rounded px-2 py-1 text-sm font-normal text-[#b5bac1] hover:bg-white/5 hover:text-white data-[hovered=true]:bg-white/5"
-            >
-              退出登录
-            </Button>
+            {/* 用户设置唯一入口（这页没有频道栏的用户栏）：头像 + 齿轮，退出登录在设置左侧导航底部 */}
+            {user ? (
+              <Button
+                variant="ghost"
+                aria-label="用户设置"
+                data-testid="home-settings"
+                onPress={() => setSettingsOpen(true)}
+                className="h-10 min-h-0 gap-2 rounded-lg bg-transparent px-2 text-sm font-normal text-[#b5bac1] hover:bg-white/5 hover:text-white data-[hovered=true]:bg-white/5"
+              >
+                <MemberAvatar member={user} size={28} />
+                <GearIcon />
+              </Button>
+            ) : null}
           </div>
           <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-[#949ba4]">我的 Team — {teams.length}</h2>
           {!loading && teams.length === 0 ? (
@@ -85,15 +90,6 @@ export default function TeamsPage() {
         </div>
       </main>
       {dialog ? <TeamDialog token={token} onClose={() => setDialog(false)} onDone={onCreated} /> : null}
-      {confirmLogout ? (
-        <ConfirmDialog
-          title="退出登录"
-          message="确定要退出登录吗？"
-          confirmText="退出登录"
-          onConfirm={() => void logout()}
-          onCancel={() => setConfirmLogout(false)}
-        />
-      ) : null}
       {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
     </div>
   );

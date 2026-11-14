@@ -15,7 +15,7 @@ describe("skill 工具函数", () => {
   });
   it("skillErrorText：503 skill_unavailable / 网络错误 / 其他", () => {
     expect(skillErrorText(new ApiError(503, "skill_unavailable", "x"))).toContain("暂时不可用");
-    expect(skillErrorText(new ApiError(0, "network_error", "x"))).toContain("网络错误");
+    expect(skillErrorText(new ApiError(0, "network_error", "x"))).toContain("网络异常");
     expect(skillErrorText(new ApiError(500, "internal", "炸了"))).toBe("获取 Skill 信息失败：炸了");
   });
 });

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Button, Card, Chip, ScrollShadow, Spinner, buttonVariants } from "@heroui/react";
+import { Button, Card, Chip, Spinner, buttonVariants } from "@heroui/react";
 import { api } from "../../api";
 import type { SkillInfo } from "../../api/types";
 import { formatBytes, installDir, skillErrorText } from "../../lib/skill";
@@ -81,9 +81,10 @@ export function SkillDownload() {
       </Card>
 
       <Card className="gap-2 rounded-lg bg-[#2b2d31] p-4 shadow-none">
-        <div className="text-xs font-semibold tracking-wide text-[#b5bac1] uppercase">安装命令</div>
-        <div className="flex items-center gap-2 rounded-md bg-[#1e1f22] py-1.5 pr-1.5 pl-3">
-          <code className="min-w-0 flex-1 overflow-x-auto font-mono text-[13px] whitespace-nowrap text-[#f2f3f5]" data-testid="skill-install-command">
+        <div className="text-xs font-semibold tracking-wide text-[#b5bac1]">安装命令</div>
+        {/* 命令自动换行（窄屏也能看全），不靠横向滚动 */}
+        <div className="flex items-start gap-2 rounded-md bg-[#1e1f22] py-1.5 pr-1.5 pl-3">
+          <code className="min-w-0 flex-1 py-1 font-mono text-[13px] leading-5 break-all whitespace-pre-wrap text-[#f2f3f5]" data-testid="skill-install-command">
             {info.install_command}
           </code>
           <Button size="sm" variant={copied === "ok" ? "secondary" : "primary"} onPress={() => void copy(info.install_command)} aria-label="复制安装命令">
@@ -107,17 +108,18 @@ export function SkillDownload() {
           </a>
           <span className="text-xs text-[#949ba4]">tgz {formatBytes(info.size_bytes)}</span>
         </div>
-        <div className="font-mono text-[11px] break-all text-[#6d6f78]" title="tgz 的 SHA-256">
+        <div className="font-mono text-[11px] break-all text-[#b5bac1]" title="tgz 的 SHA-256" data-testid="skill-sha256">
           sha256 {info.sha256}
         </div>
       </Card>
 
       <Card className="gap-2 rounded-lg bg-[#2b2d31] p-4 shadow-none">
-        <div className="text-xs font-semibold tracking-wide text-[#b5bac1] uppercase">SKILL.md 预览</div>
+        <div className="text-xs font-semibold tracking-wide text-[#b5bac1]">SKILL.md 预览</div>
         {info.skill_md ? (
-          <ScrollShadow className="max-h-80 rounded-md bg-[#1e1f22]" data-testid="skill-preview">
-            <pre className="p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap text-[#dbdee1]">{info.skill_md}</pre>
-          </ScrollShadow>
+          // 只留外层窗口一层滚动：预览框不限高度，避免两层滚动滑错
+          <div className="rounded-md bg-[#1e1f22]" data-testid="skill-preview">
+            <pre className="p-3 font-mono text-xs leading-relaxed break-words whitespace-pre-wrap text-[#dbdee1]">{info.skill_md}</pre>
+          </div>
         ) : (
           <p className="text-sm text-[#949ba4]">没有返回预览内容，可以点「下载 SKILL.md」查看。</p>
         )}

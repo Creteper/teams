@@ -1,3 +1,4 @@
+import { errorText } from "../lib/errorText";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button, Input, Label, ListBox, Select, type Key } from "@heroui/react";
 import { ConfirmDialog, DialogShell } from "./ui";
@@ -11,6 +12,9 @@ import {
   inviteUrl,
   type InviteStatus,
 } from "../lib/invite";
+
+/** 输入框、旁边的「添加」按钮和上面的下拉框统一用同一个圆角（12px），不出现胶囊形 */
+const FIELD_RADIUS = "rounded-xl";
 
 const STATUS_CLASS: Record<InviteStatus, string> = {
   active: "bg-[#23a55a]/20 text-[#57f287]",
@@ -46,7 +50,7 @@ function OptionSelect({
       }}
     >
       <Label className="mb-1 block text-sm text-[#b5bac1]">{label}</Label>
-      <Select.Trigger>
+      <Select.Trigger data-testid="invite-select" className={FIELD_RADIUS}>
         <Select.Value />
         <Select.Indicator />
       </Select.Trigger>
@@ -95,7 +99,7 @@ export function InviteDialog({
     try {
       setInvites((await api.listInvites(token, team.id)).items);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     }
   }, [token, team.id]);
 
@@ -117,7 +121,7 @@ export function InviteDialog({
       setCreated(inv);
       await reload();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setBusy(false);
     }
@@ -155,7 +159,7 @@ export function InviteDialog({
       if (created?.id === inv.id) setCreated(null);
       setConfirmRevoke(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
       setConfirmRevoke(null);
     } finally {
       setRevoking(false);
@@ -170,7 +174,7 @@ export function InviteDialog({
       setAddMsg({ ok: true, text: `已添加 ${m.display_name}` });
       setUsername("");
     } catch (e) {
-      setAddMsg({ ok: false, text: e instanceof Error ? e.message : String(e) });
+      setAddMsg({ ok: false, text: errorText(e) });
     }
   }
 
@@ -258,9 +262,10 @@ export function InviteDialog({
               onKeyDown={(e) => {
                 if (e.key === "Enter" && username.trim()) void addByUsername();
               }}
-              className="flex-1"
+              data-testid="invite-username"
+              className={`flex-1 ${FIELD_RADIUS}`}
             />
-            <Button variant="secondary" isDisabled={!username.trim()} onPress={() => void addByUsername()}>
+            <Button variant="secondary" className={FIELD_RADIUS} isDisabled={!username.trim()} onPress={() => void addByUsername()}>
               添加
             </Button>
           </div>

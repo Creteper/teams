@@ -1,3 +1,4 @@
+import { errorText } from "../lib/errorText";
 import { useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router";
 import { Button, Input } from "@heroui/react";
@@ -44,7 +45,7 @@ export default function RegisterPage() {
       await register({ username, display_name: displayName, password });
       navigate(target, { replace: true });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorText(err));
       setInvalid(registerErrorFields(err));
       const wait = retryAfterSeconds(err);
       if (wait !== null) {

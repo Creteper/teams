@@ -1,3 +1,4 @@
+import { errorText } from "../lib/errorText";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams, useSearchParams } from "react-router";
 import { CloseButton, Spinner } from "@heroui/react";
@@ -33,7 +34,7 @@ import type { Attachment, MessageSender } from "../api/types";
 export default function TeamPage() {
   const { teamId = "", channelId } = useParams();
   const token = useToken();
-  const { user, logout, syncUser } = useAuth();
+  const { user, syncUser } = useAuth();
   const navigate = useNavigate();
   const { teams, reload: reloadTeams } = useTeams(token);
   const [searchParams] = useSearchParams();
@@ -73,7 +74,7 @@ export default function TeamPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   // 设置窗口：null = 关闭；"" = 从齿轮打开（窄屏先显示分类列表）；其他 = 直接打开某一页
   const [settings, setSettings] = useState<SettingsTab | "" | null>(null);
-  const [confirm, setConfirm] = useState<null | "leave" | "logout">(null);
+  const [confirm, setConfirm] = useState<null | "leave">(null);
   const [confirmPending, setConfirmPending] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
   // 设为/取消管理员：取消前二次确认；乐观更新，失败回滚并提示
@@ -118,7 +119,7 @@ export default function TeamPage() {
         setMembers(ms);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setError(errorText(e));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -186,7 +187,7 @@ export default function TeamPage() {
       void markRead(channelId, top || undefined);
     })()
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) setError(errorText(e));
       })
       .finally(() => {
         if (!cancelled) setMessagesLoading(false);
@@ -211,7 +212,7 @@ export default function TeamPage() {
       setHasMore(page.has_more);
       setOlderCursor(page.next_cursor);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setLoadingOlder(false);
     }
@@ -411,7 +412,7 @@ export default function TeamPage() {
         if (bots.length && !claimed)
           dispatchRuns({ type: "optimistic", trigger_message_id: msg.id, channel_id: msg.channel_id, bot_member_ids: bots, now: Date.now() });
       } catch (e) {
-        dispatchSend({ type: "failed", local_id: item.local_id, error: e instanceof Error ? e.message : String(e) });
+        dispatchSend({ type: "failed", local_id: item.local_id, error: errorText(e) });
       }
     },
     [token, channelId],
@@ -425,12 +426,10 @@ export default function TeamPage() {
         await api.leaveTeam(token, teamId);
         await reloadTeams();
         navigate("/teams", { replace: true });
-      } else if (confirm === "logout") {
-        await logout();
       }
       setConfirm(null);
     } catch (e) {
-      setConfirmError(e instanceof Error ? e.message : String(e));
+      setConfirmError(errorText(e));
     } finally {
       setConfirmPending(false);
     }
@@ -470,7 +469,7 @@ export default function TeamPage() {
 
   return (
     <div className="flex h-full overflow-hidden bg-[#313338] text-[#dbdee1]">
-      <TeamRail teams={teams} currentTeamId={teamId} onAdd={() => setDialogOpen(true)} onSettings={() => setSettings("")} unread={unread.summary} />
+      <TeamRail teams={teams} currentTeamId={teamId} onAdd={() => setDialogOpen(true)} unread={unread.summary} />
       <ChannelSidebar
         team={team}
         channels={channels}
@@ -488,17 +487,13 @@ export default function TeamPage() {
           setConfirmError(null);
           setConfirm("leave");
         }}
-        onLogout={() => {
-          setConfirmError(null);
-          setConfirm("logout");
-        }}
-        onEditProfile={() => setSettings("profile")}
+        onOpenSettings={(tab) => setSettings(tab ?? "")}
         myMemberId={myMemberId}
         unread={unread.map}
         onChannelAction={(c, action) => {
           if (action === "pin" || action === "unpin") {
             unread.setPinned(c.id, action === "pin").catch((e: unknown) =>
-              setChannelNotice(`${action === "pin" ? "置顶" : "取消置顶"}失败：${e instanceof Error ? e.message : String(e)}`),
+              setChannelNotice(`${action === "pin" ? "置顶" : "取消置顶"}失败：${errorText(e)}`),
             );
           } else if (action === "rename") setRenameTarget(c);
           else if (action === "delete") {
@@ -709,17 +704,6 @@ export default function TeamPage() {
           title={`退出「${team.name}」`}
           message={<>确定要退出这个 team 吗？退出后需要重新被邀请才能回来。</>}
           confirmText="退出 Team"
-          pending={confirmPending}
-          error={confirmError}
-          onConfirm={() => void runConfirm()}
-          onCancel={() => setConfirm(null)}
-        />
-      ) : null}
-      {confirm === "logout" ? (
-        <ConfirmDialog
-          title="退出登录"
-          message={<>确定要退出登录吗？</>}
-          confirmText="退出登录"
           pending={confirmPending}
           error={confirmError}
           onConfirm={() => void runConfirm()}

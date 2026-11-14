@@ -1,3 +1,4 @@
+import { errorText } from "../lib/errorText";
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type WheelEvent } from "react";
 import { Button, Slider } from "@heroui/react";
 import {
@@ -157,7 +158,7 @@ export function AvatarCropDialog({
       if (blob.size > AVATAR_MAX_BYTES) throw new Error(`裁剪后的图片仍超过 5 MB（${formatBytes(blob.size)}），请换一张`);
       await onConfirm(blob, type === "image/jpeg" ? "avatar.jpg" : "avatar.png");
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setPending(false);
     }

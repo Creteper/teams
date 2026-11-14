@@ -13,7 +13,8 @@ function notificationFromPayload(p) {
       body: (p && p.message && p.message.excerpt) || "",
       tag: (p && p.tag) || undefined,
       icon: (p && p.sender && p.sender.avatar_url) || "/icons/icon-192.png",
-      badge: "/icons/icon-192.png",
+      // badge：透明底单色白剪影（Android 状态栏只取 alpha），icon 继续用彩色的
+      badge: "/icons/badge-72.png",
       data: { url: (p && p.url) || "/teams" },
     },
   };

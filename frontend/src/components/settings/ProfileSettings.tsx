@@ -1,3 +1,4 @@
+import { errorText } from "../../lib/errorText";
 import { useRef, useState } from "react";
 import { Button, Card, Input } from "@heroui/react";
 import { useAuth } from "../../auth/AuthContext";
@@ -47,7 +48,7 @@ export function ProfileSettings() {
       setName(name.trim());
       setSaved(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setPending(false);
     }
@@ -189,7 +190,7 @@ export function ProfileSettings() {
               setConfirmRemove(false);
               setAvatarNotice("头像已移除");
             } catch (e) {
-              setAvatarError(`移除失败：${e instanceof Error ? e.message : String(e)}`);
+              setAvatarError(`移除失败：${errorText(e)}`);
             } finally {
               setRemoving(false);
             }

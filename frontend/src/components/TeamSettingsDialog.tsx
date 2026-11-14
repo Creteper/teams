@@ -1,3 +1,4 @@
+import { errorText } from "../lib/errorText";
 import { useState } from "react";
 import { Button, Input, TextArea } from "@heroui/react";
 import { api } from "../api";
@@ -24,7 +25,7 @@ export function TeamSettingsDialog({ token, team, onClose, onSaved }: { token: s
       const t = Object.keys(input).length ? await api.updateTeam(token, team.id, input) : team;
       onSaved(t);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setPending(false);
     }

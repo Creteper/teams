@@ -1,3 +1,4 @@
+import { errorText } from "./errorText";
 import type { TeamsApi } from "../api/client";
 import { ApiError } from "../api/errors";
 import type { PushSubscriptionJSONBody } from "../api/types";
@@ -58,12 +59,11 @@ export function pushErrorText(e: unknown): string {
   if (e instanceof PushSetupError) return e.message;
   if (e instanceof ApiError) {
     if (e.status === 503 && e.code === "push_disabled") return "服务器暂未开启推送功能，无法订阅。";
-    if (e.status === 400) return `订阅信息被服务器拒绝：${e.message}`;
+    if (e.status === 400) return `订阅信息被服务器拒绝：${errorText(e)}`;
     if (e.status === 0) return "网络异常，订阅没有保存到服务器，请稍后再试。";
-    return `保存订阅失败：${e.message}${e.requestId ? `（请求编号 ${e.requestId}）` : ""}`;
+    return `保存订阅失败：${errorText(e)}`;
   }
-  const msg = e instanceof Error ? e.message : String(e);
-  return `订阅推送失败（${msg}）。${CHROME_GFW_HINT}`;
+  return `订阅推送失败。${CHROME_GFW_HINT}`;
 }
 
 export async function registerServiceWorker(): Promise<ServiceWorkerRegistration> {
@@ -96,7 +96,8 @@ export async function enablePush(api: TeamsApi, token: string, userId: string, p
       (await reg.pushManager.getSubscription()) ??
       (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64UrlToBytes(publicKey) }));
   } catch (e) {
-    throw new PushSetupError("subscribe", `浏览器订阅推送失败（${e instanceof Error ? e.message : String(e)}）。${CHROME_GFW_HINT}`);
+    // 浏览器给的是英文原文（如 "Registration failed - push service error"），不展示
+    throw new PushSetupError("subscribe", `${e instanceof DOMException && e.name === "NotAllowedError" ? "浏览器拒绝了推送订阅" : "浏览器订阅推送失败"}。${CHROME_GFW_HINT}`);
   }
   const json = sub.toJSON() as PushSubscriptionJSONBody;
   await api.subscribePush(token, { endpoint: json.endpoint, expirationTime: json.expirationTime ?? null, keys: json.keys });

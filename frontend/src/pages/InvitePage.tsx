@@ -1,3 +1,4 @@
+import { errorText } from "../lib/errorText";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { Button, Card, Spinner } from "@heroui/react";
@@ -34,7 +35,7 @@ export default function InvitePage() {
         if (cancelled) return;
         const reason = e instanceof ApiError ? reasonFromErrorCode(e.code) : null;
         if (reason) setProblem(reason);
-        else setError(e instanceof Error ? e.message : String(e));
+        else setError(errorText(e));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -55,7 +56,7 @@ export default function InvitePage() {
     } catch (e) {
       const reason = e instanceof ApiError ? reasonFromErrorCode(e.code) : null;
       if (reason) setProblem(reason);
-      else setError(e instanceof Error ? e.message : String(e));
+      else setError(errorText(e));
     } finally {
       setJoining(false);
     }

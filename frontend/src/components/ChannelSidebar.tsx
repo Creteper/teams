@@ -1,9 +1,10 @@
+import { errorText } from "../lib/errorText";
 import { useState } from "react";
 import { Link } from "react-router";
-import { Button, Description, Dropdown, Header, Input, Label, Separator, Tooltip } from "@heroui/react";
+import { Button, Description, Dropdown, Input, Label, Separator, Tooltip } from "@heroui/react";
 import type { Channel, Team, User } from "../api/types";
 import { MemberAvatar } from "./MemberAvatar";
-import { GearIcon, PinIcon } from "./ui";
+import { GearIcon, PinIcon, SlidersIcon } from "./ui";
 import { RowActionsMenu } from "./RowActionsMenu";
 import { CHANNEL_ACTION_TEXT, channelActions, type ChannelAction } from "../lib/channels";
 import { sortChannels, unreadLabel, type UnreadMap } from "../lib/unread";
@@ -19,7 +20,10 @@ const MENU_ITEM_DANGER =
 
 const HINT_TOOLTIP = "pointer-events-none rounded-md bg-[#111214] px-2.5 py-1.5 text-xs font-semibold text-white shadow-lg";
 
-/** 第二栏：team 名 + 下拉菜单、频道列表（可新建）、底部自己 + 齿轮菜单 */
+/**
+ * 第二栏：team 名 + 下拉菜单、频道列表（可新建）、底部用户栏。
+ * 用户栏照 Discord：点头像 → 设置里的「个人资料」；点齿轮 → 直接打开设置窗口（退出登录在设置左侧导航底部）。
+ */
 export function ChannelSidebar({
   team,
   channels,
@@ -30,8 +34,7 @@ export function ChannelSidebar({
   onInvite,
   onSettings,
   onLeave,
-  onLogout,
-  onEditProfile,
+  onOpenSettings,
   myMemberId = "",
   onChannelAction,
   unread = {},
@@ -45,8 +48,8 @@ export function ChannelSidebar({
   onInvite(): void;
   onSettings(): void;
   onLeave(): void;
-  onLogout(): void;
-  onEditProfile(): void;
+  /** 打开用户设置：头像 → "profile"；齿轮 → 不指定（宽屏默认个人资料，窄屏先显示分类列表） */
+  onOpenSettings(tab?: "profile"): void;
   myMemberId?: string;
   /** 频道菜单（改名 / 删除）；不传则不显示菜单 */
   onChannelAction?: (channel: Channel, action: ChannelAction) => void;
@@ -58,7 +61,6 @@ export function ChannelSidebar({
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [teamMenu, setTeamMenu] = useState(false);
-  const [userMenu, setUserMenu] = useState(false);
   const isOwner = team?.my_role === "owner";
 
   async function submit() {
@@ -68,7 +70,7 @@ export function ChannelSidebar({
       setName("");
       setCreating(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     }
   }
 
@@ -139,7 +141,9 @@ export function ChannelSidebar({
       <Dropdown isOpen={teamMenu} onOpenChange={setTeamMenu}>
         <Dropdown.Trigger
           aria-label={`${team?.name ?? "Team"} 菜单`}
-          className="flex h-12 w-full items-center justify-between rounded-none border-b border-black/30 px-4 text-left font-semibold text-[#f2f3f5] outline-none hover:bg-[#35373c] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-inset"
+          data-testid="team-name-trigger"
+          // 左内边距 12px：team 名和下面「置顶 / 文字频道」分组标题的左边缘对齐（原来 16px，往右偏了 4px）
+          className="flex h-12 w-full items-center justify-between rounded-none border-b border-black/30 pr-4 pl-3 text-left font-semibold text-[#f2f3f5] outline-none hover:bg-[#35373c] focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-inset"
         >
           <span className="truncate">{team?.name ?? "…"}</span>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true" className={`text-[#b5bac1] transition-transform ${teamMenu ? "rotate-180" : ""}`}>
@@ -166,7 +170,8 @@ export function ChannelSidebar({
                 </Dropdown.Item>
                 <Dropdown.Item id="settings" textValue="Team 设置" className={MENU_ITEM}>
                   <Label className="flex-1">Team 设置</Label>
-                  <span className="text-xs opacity-70">⚙</span>
+                  {/* 不用齿轮：齿轮只代表用户设置，避免两个长得一样的图标功能不同 */}
+                  <SlidersIcon size={14} className="opacity-70" />
                 </Dropdown.Item>
               </Dropdown.Section>
             ) : null}
@@ -244,50 +249,32 @@ export function ChannelSidebar({
           <Button
             isIconOnly
             variant="ghost"
-            aria-label="编辑头像和个人资料"
-            onPress={onEditProfile}
+            aria-label="个人资料"
+            data-testid="userbar-avatar"
+            onPress={() => onOpenSettings("profile")}
             className="size-8 min-w-8 rounded-full bg-transparent p-0 outline-none hover:bg-transparent focus-visible:ring-2 focus-visible:ring-brand data-[hovered=true]:bg-transparent"
           >
             <MemberAvatar member={me} size={32} />
           </Button>
-          <Tooltip.Content className={HINT_TOOLTIP}>编辑头像和个人资料</Tooltip.Content>
+          <Tooltip.Content className={HINT_TOOLTIP}>个人资料</Tooltip.Content>
         </Tooltip>
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold text-[#f2f3f5]">{me.display_name}</div>
           <div className="truncate text-xs text-[#b5bac1]">@{me.username}</div>
         </div>
-        <Dropdown isOpen={userMenu} onOpenChange={setUserMenu}>
-          <Dropdown.Trigger
+        <Tooltip delay={300}>
+          <Button
+            isIconOnly
+            variant="ghost"
             aria-label="用户设置"
-            className="flex h-8 w-8 items-center justify-center rounded text-[#b5bac1] outline-none hover:bg-[#35373c] hover:text-white focus-visible:ring-2 focus-visible:ring-brand"
+            data-testid="userbar-settings"
+            onPress={() => onOpenSettings()}
+            className="size-8 min-w-8 rounded bg-transparent p-0 text-[#b5bac1] outline-none hover:bg-[#35373c] hover:text-white focus-visible:ring-2 focus-visible:ring-brand data-[hovered=true]:bg-[#35373c] data-[pressed=true]:bg-[#3f4147]"
           >
             <GearIcon />
-          </Dropdown.Trigger>
-          <Dropdown.Popover placement="top end" offset={10} crossOffset={8} className={MENU_POPOVER}>
-            <Dropdown.Menu
-              aria-label="用户菜单"
-              className="p-0"
-              onAction={(k) => {
-                setUserMenu(false);
-                if (k === "profile") onEditProfile();
-                else if (k === "logout") onLogout();
-              }}
-            >
-              <Dropdown.Section className={MENU_SECTION}>
-                <Header className="px-2 py-1.5 text-xs font-normal text-[#949ba4]">已登录为 @{me.username}</Header>
-                <Dropdown.Item id="profile" textValue="编辑个人资料" className={MENU_ITEM}>
-                  <Label>编辑个人资料</Label>
-                </Dropdown.Item>
-              </Dropdown.Section>
-              <Separator className="my-1 bg-white/10" />
-              <Dropdown.Section className={MENU_SECTION}>
-                <Dropdown.Item id="logout" textValue="退出登录" variant="danger" className={MENU_ITEM_DANGER}>
-                  <Label className="text-danger">退出登录</Label>
-                </Dropdown.Item>
-              </Dropdown.Section>
-            </Dropdown.Menu>
-          </Dropdown.Popover>
-        </Dropdown>
+          </Button>
+          <Tooltip.Content className={HINT_TOOLTIP}>用户设置</Tooltip.Content>
+        </Tooltip>
       </div>
     </aside>
   );

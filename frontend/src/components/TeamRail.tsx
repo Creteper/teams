@@ -3,7 +3,7 @@ import { Badge, Button } from "@heroui/react";
 import type { Team } from "../api/types";
 import { Logo } from "./Logo";
 import { TeamIcon } from "./TeamIcon";
-import { GearIcon, RailTooltip } from "./ui";
+import { RailTooltip } from "./ui";
 import { unreadLabel, type TeamUnread } from "../lib/unread";
 
 /**
@@ -14,14 +14,11 @@ export function TeamRail({
   teams,
   currentTeamId,
   onAdd,
-  onSettings,
   unread = {},
 }: {
   teams: Team[];
   currentTeamId?: string;
   onAdd(): void;
-  /** 齿轮：打开设置窗口（不传则不显示） */
-  onSettings?: () => void;
   unread?: Record<string, TeamUnread>;
 }) {
   return (
@@ -101,21 +98,6 @@ export function TeamRail({
             </Button>
         </RailTooltip>
       </div>
-      {onSettings ? (
-        <div className="group relative mt-auto flex w-full justify-center">
-          <RailTooltip text="设置">
-            <Button
-              isIconOnly
-              onPress={onSettings}
-              aria-label="设置"
-              data-testid="rail-settings"
-              className="h-12 w-12 min-w-12 rounded-[24px] bg-[#313338] text-[#b5bac1] transition-all hover:rounded-2xl hover:bg-[#404249] hover:text-white data-[hovered=true]:bg-[#404249]"
-            >
-              <GearIcon size={22} />
-            </Button>
-          </RailTooltip>
-        </div>
-      ) : null}
     </nav>
   );
 }

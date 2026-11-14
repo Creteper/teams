@@ -1,3 +1,4 @@
+import { errorText } from "../lib/errorText";
 import { useEffect, useState } from "react";
 import { Spinner } from "@heroui/react";
 import { api } from "../api";
@@ -35,7 +36,7 @@ export function MemberProfileDialog({ token, member: listed, isMe, onClose }: { 
         setFresh(m);
         setError(null);
       })
-      .catch((e: unknown) => !cancelled && setError(e instanceof Error ? e.message : String(e)))
+      .catch((e: unknown) => !cancelled && setError(errorText(e)))
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;

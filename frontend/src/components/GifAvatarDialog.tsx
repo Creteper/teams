@@ -1,3 +1,4 @@
+import { errorText } from "../lib/errorText";
 import { useEffect, useState } from "react";
 import { Button } from "@heroui/react";
 import { formatBytes } from "../lib/avatarCrop";
@@ -35,7 +36,7 @@ export function GifAvatarDialog({
     try {
       await onConfirm();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setPending(false);
     }

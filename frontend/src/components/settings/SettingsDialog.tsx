@@ -2,7 +2,8 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Button, Modal, Tabs } from "@heroui/react";
 import { useAuth, useToken } from "../../auth/AuthContext";
 import { PushSettings } from "../PushSettings";
-import { CLOSE_BUTTON_CLASS } from "../ui";
+import { CLOSE_BUTTON_CLASS, ConfirmDialog } from "../ui";
+import { errorText } from "../../lib/errorText";
 import { ProfileSettings } from "./ProfileSettings";
 import { SkillDownload } from "./SkillDownload";
 
@@ -32,9 +33,15 @@ function useNarrow() {
 /**
  * 设置窗口（HeroUI Modal + 垂直 Tabs）：左侧分类导航（图标 + 文字，选中项高亮），右侧标题 + 分组卡片。
  * Esc / 右上角 × / 点遮罩关闭；里面再开的裁剪、确认等弹窗在上层，Esc 只关最上层。
+ * - 选中项直接用底色标出（不用 Tabs.Indicator 的滑动块：它会在切换 / 改窗口大小时停在两项中间、盖住文字）；
+ * - 左侧导航最底下是红字「退出登录」，点了先弹 AlertDialog 确认；
+ * - 右上角 × 单独占一栏：宽屏内容区右侧留出 72px，窄屏内容页顶部有不滚动的标题栏，滚动时都不会和内容重叠。
  */
 export function SettingsDialog({ initialTab, onClose }: { initialTab?: SettingsTab; onClose(): void }) {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
+  const [confirmLogout, setConfirmLogout] = useState(false);
+  const [logoutPending, setLogoutPending] = useState(false);
+  const [logoutError, setLogoutError] = useState<string | null>(null);
   const token = useToken();
   const narrow = useNarrow();
   const [tab, setTab] = useState<SettingsTab>(initialTab ?? "profile");
@@ -43,6 +50,19 @@ export function SettingsDialog({ initialTab, onClose }: { initialTab?: SettingsT
   const showList = !narrow || view === "list";
   const showContent = !narrow || view === "content";
   const current = TABS.find((t) => t.id === tab)!;
+  // 窄屏分类列表只是入口，不预先高亮任何一项
+  const highlight = !narrow;
+
+  async function doLogout() {
+    setLogoutPending(true);
+    setLogoutError(null);
+    try {
+      await logout();
+    } catch (e) {
+      setLogoutError(errorText(e, "退出登录失败，请稍后再试"));
+      setLogoutPending(false);
+    }
+  }
 
   return (
     <Modal.Backdrop isOpen onOpenChange={(open) => !open && onClose()} className="z-40 bg-black/70">
@@ -76,50 +96,83 @@ export function SettingsDialog({ initialTab, onClose }: { initialTab?: SettingsT
                     <Tabs.Tab
                       key={t.id}
                       id={t.id}
-                      className="h-10 w-full justify-start gap-2.5 rounded-md px-2.5 text-[15px] font-medium text-[#b5bac1] hover:text-[#dbdee1] data-[hovered=true]:bg-[#35373c] data-[selected=true]:text-white sm:h-9"
+                      data-highlight={highlight && t.id === tab ? "true" : undefined}
+                      className={`h-10 w-full justify-start gap-2.5 rounded-md px-2.5 text-[15px] font-medium text-[#b5bac1] transition-none hover:text-[#dbdee1] data-[hovered=true]:bg-[#35373c] sm:h-9 ${
+                        highlight ? "data-[selected=true]:bg-[#404249] data-[selected=true]:text-white" : ""
+                      }`}
                     >
                       <span className="relative z-1 flex items-center gap-2.5">
                         {t.icon}
                         {t.label}
                       </span>
                       {narrow ? <span className="relative z-1 ml-auto text-[#80848e]" aria-hidden="true">›</span> : null}
-                      <Tabs.Indicator className="rounded-md bg-[#404249] shadow-none" />
                     </Tabs.Tab>
                   ))}
                 </Tabs.List>
               </Tabs.ListContainer>
-            </nav>
-            <section className={`${showContent ? "flex" : "hidden"} min-h-0 min-w-0 flex-1 flex-col overflow-y-auto px-4 py-6 sm:px-10 sm:py-10`}>
-              {narrow ? (
-                <Button variant="ghost" size="sm" className="mb-3 self-start px-1 text-[#b5bac1]" onPress={() => setView("list")} aria-label="返回设置分类">
-                  ‹ 返回
+              <div className="mt-auto pt-4">
+                <div className="mx-2.5 mb-2 h-px bg-white/10" />
+                <Button
+                  variant="ghost"
+                  data-testid="settings-logout"
+                  onPress={() => {
+                    setLogoutError(null);
+                    setConfirmLogout(true);
+                  }}
+                  className="h-10 w-full justify-start gap-2.5 rounded-md bg-transparent px-2.5 text-[15px] font-medium text-[#f23f43] hover:bg-[#f23f43]/10 data-[hovered=true]:bg-[#f23f43]/10 data-[pressed=true]:scale-100 sm:h-9"
+                >
+                  <LogoutIcon />
+                  退出登录
                 </Button>
+              </div>
+            </nav>
+            <section className={`${showContent ? "flex" : "hidden"} min-h-0 min-w-0 flex-1 flex-col`}>
+              {narrow ? (
+                // 窄屏：返回按钮和右上角 × 在同一条不滚动的顶栏里
+                <div className="flex h-16 shrink-0 items-center border-b border-black/20 pr-16 pl-2">
+                  <Button variant="ghost" size="sm" className="px-2 text-[#b5bac1]" onPress={() => setView("list")} aria-label="返回设置分类">
+                    ‹ 返回
+                  </Button>
+                </div>
               ) : null}
-              <h3 className="text-xl font-bold text-white" data-testid="settings-title">
-                {current.title}
-              </h3>
-              <p className="mt-1 mb-5 text-sm text-[#949ba4]">{current.desc}</p>
-              <Tabs.Panel id="profile" className="p-0">
-                <ProfileSettings />
-              </Tabs.Panel>
-              <Tabs.Panel id="notifications" className="p-0">
-                {user ? (
-                  <PushSettings
-                    token={token}
-                    userId={user.id}
-                    hiddenFallback={
-                      <div className="rounded-lg bg-[#2b2d31] p-4 text-sm text-[#949ba4]" data-testid="push-hidden">
-                        服务器没有开启网页推送，暂时不能设置 @ 消息通知。
-                      </div>
-                    }
-                  />
-                ) : null}
-              </Tabs.Panel>
-              <Tabs.Panel id="skill" className="p-0">
-                <SkillDownload />
-              </Tabs.Panel>
+              <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 sm:py-10 sm:pr-[72px] sm:pl-10" data-testid="settings-scroll">
+                <h3 className="text-xl font-bold text-white" data-testid="settings-title">
+                  {current.title}
+                </h3>
+                <p className="mt-1 mb-5 text-sm text-[#949ba4]">{current.desc}</p>
+                <Tabs.Panel id="profile" className="p-0">
+                  <ProfileSettings />
+                </Tabs.Panel>
+                <Tabs.Panel id="notifications" className="p-0">
+                  {user ? (
+                    <PushSettings
+                      token={token}
+                      userId={user.id}
+                      hiddenFallback={
+                        <div className="rounded-lg bg-[#2b2d31] p-4 text-sm text-[#949ba4]" data-testid="push-hidden">
+                          服务器没有开启网页推送，暂时不能设置 @ 消息通知。
+                        </div>
+                      }
+                    />
+                  ) : null}
+                </Tabs.Panel>
+                <Tabs.Panel id="skill" className="p-0">
+                  <SkillDownload />
+                </Tabs.Panel>
+              </div>
             </section>
           </Tabs>
+          {confirmLogout ? (
+            <ConfirmDialog
+              title="退出登录"
+              message="确定要退出登录吗？"
+              confirmText="退出登录"
+              pending={logoutPending}
+              error={logoutError}
+              onConfirm={() => void doLogout()}
+              onCancel={() => setConfirmLogout(false)}
+            />
+          ) : null}
           <Modal.CloseTrigger aria-label="关闭设置" className={`${CLOSE_BUTTON_CLASS} top-5 right-5 rounded-full ring-1 ring-[#b5bac1]/50 hover:ring-white`} />
         </Modal.Dialog>
       </Modal.Container>
@@ -149,6 +202,15 @@ function DownloadIcon() {
       <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
       <path d="M7 10l5 5 5-5" />
       <path d="M12 15V3" />
+    </svg>
+  );
+}
+function LogoutIcon() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+      <path d="M16 17l5-5-5-5" />
+      <path d="M21 12H9" />
     </svg>
   );
 }

@@ -1,6 +1,7 @@
 import type { TeamsApi } from "../client";
 import { API_BASE_URL, API_PREFIX } from "../config";
 import { ApiError } from "../errors";
+import { NETWORK_ERROR_TEXT } from "../../lib/errorText";
 import type { ApiErrorBody, Attachment, AttachmentUrlsResponse, BotRunItem, ChannelUserState } from "../types";
 import type { UploadOptions } from "../client";
 import { isMember } from "../../lib/memberRoles";
@@ -27,8 +28,9 @@ export async function request<T>(
       headers,
       body: init.body === undefined ? undefined : isForm ? (init.body as FormData) : JSON.stringify(init.body),
     });
-  } catch (e) {
-    throw new ApiError(0, "network_error", `网络错误：${e instanceof Error ? e.message : String(e)}`);
+  } catch {
+    // 不把浏览器的英文原文（Failed to fetch 等）带给用户
+    throw new ApiError(0, "network_error", NETWORK_ERROR_TEXT);
   }
   if (!res.ok) {
     let body: Partial<ApiErrorBody> | null = null;
@@ -149,7 +151,7 @@ function uploadWithProgress(url: string, token: string, file: File, opts: Upload
           }),
         );
     };
-    xhr.onerror = () => reject(new ApiError(0, "network_error", "上传失败：网络错误"));
+    xhr.onerror = () => reject(new ApiError(0, "network_error", NETWORK_ERROR_TEXT));
     xhr.onabort = () => reject(new DOMException("上传已取消", "AbortError"));
     if (opts.signal) {
       if (opts.signal.aborted) return reject(new DOMException("上传已取消", "AbortError"));

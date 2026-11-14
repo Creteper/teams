@@ -161,7 +161,7 @@ export function botRunsReducer(state: BotRunState, action: BotRunAction): BotRun
 const FAIL_TEXT: Record<string, string> = {
   no_webhook: "未配置接收地址（webhook）",
   timeout: "响应超时",
-  network_error: "网络错误",
+  network_error: "网络异常",
   http_error: "对方服务返回错误",
   invalid_url: "接收地址无效",
   message_deleted: "触发消息已被删除",
@@ -196,3 +196,23 @@ export function botRunText(run: BotRun, botName: string, opts: { technical?: boo
 export const isConnecting = (run: BotRun) => run.phase === "optimistic" || run.phase === "started";
 
 export const isDismissable = (run: BotRun) => run.phase === "failed" || run.phase === "timeout" || run.phase === "declined";
+
+/** 「正在输入」里单个名字的最长字符数，超过用省略号截断（整行另有 CSS truncate 兜底） */
+export const TYPING_NAME_MAX = 12;
+
+export function clipName(name: string, max = TYPING_NAME_MAX): string {
+  const chars = Array.from(name);
+  return chars.length > max ? `${chars.slice(0, max).join("")}…` : name;
+}
+
+/**
+ * 已送达（正在输入）的 bot 名字 → 文案：
+ * 1 个「A 正在输入…」；2 个「A 和 B 正在输入…」；3 个及以上「A、B 等 N 个正在输入…」。
+ */
+export function typingText(names: string[]): string {
+  const n = names.map((x) => clipName(x));
+  if (n.length === 0) return "";
+  if (n.length === 1) return `${n[0]} 正在输入…`;
+  if (n.length === 2) return `${n[0]} 和 ${n[1]} 正在输入…`;
+  return `${n[0]}、${n[1]} 等 ${n.length} 个正在输入…`;
+}

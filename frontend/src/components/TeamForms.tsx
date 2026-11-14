@@ -1,3 +1,4 @@
+import { errorText } from "../lib/errorText";
 import { useState } from "react";
 import { useNavigate } from "react-router";
 import { Button, Input, Tabs, TextArea } from "@heroui/react";
@@ -23,7 +24,7 @@ export function CreateTeamForm({ token, onDone }: { token: string; onDone(team: 
     try {
       onDone(await api.createTeam(token, { name: name.trim(), description: description.trim() }));
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setBusy(false);
     }

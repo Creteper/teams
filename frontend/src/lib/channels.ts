@@ -1,3 +1,4 @@
+import { errorText } from "./errorText";
 import { ApiError } from "../api/errors";
 import type { Channel } from "../api/types";
 import { charCount } from "./text";
@@ -57,9 +58,9 @@ export function channelErrorText(err: unknown, action: "rename" | "delete"): str
     if (err.status === 409) return `${what}：已有同名频道`;
     if (err.status === 403) return action === "delete" ? `${what}：你没有权限删除这个频道（默认频道不能删除）` : `${what}：你没有权限修改这个频道`;
     if (err.status === 404) return `${what}：频道不存在或已被删除`;
-    if (err.status === 400) return `${what}：${err.message}`;
-    if (err.code === "rate_limited") return `${what}：${err.message}`;
-    return `${what}：${err.message}${err.requestId ? `（请求编号 ${err.requestId}）` : ""}`;
+    if (err.status === 400) return `${what}：${errorText(err)}`;
+    if (err.code === "rate_limited") return `${what}：${errorText(err)}`;
+    return `${what}：${errorText(err)}${err.requestId && !errorText(err).includes(err.requestId) ? `（请求编号 ${err.requestId}）` : ""}`;
   }
   return `${what}：网络异常，请稍后再试`;
 }

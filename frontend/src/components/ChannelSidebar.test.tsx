@@ -11,7 +11,7 @@ const channels = [ch("g", "general", "o", true), ch("d", "dev", "m"), ch("r", "r
 const me = { id: "u", username: "me", display_name: "Me", avatar_url: null, created_at: "" } as User;
 const team = (role: Team["my_role"]) => ({ id: "t", name: "T", description: "", icon_url: null, owner_user_id: "x", my_member_id: "me", my_role: role, created_at: "" }) as Team;
 
-function setup(role: Team["my_role"], myMemberId: string, onChannelAction = vi.fn(), extra: { channels?: Channel[]; unread?: UnreadMap } = {}) {
+function setup(role: Team["my_role"], myMemberId: string, onChannelAction = vi.fn(), extra: { channels?: Channel[]; unread?: UnreadMap; onOpenSettings?: (tab?: "profile") => void } = {}) {
   render(
     <MemoryRouter>
       <ChannelSidebar
@@ -27,8 +27,7 @@ function setup(role: Team["my_role"], myMemberId: string, onChannelAction = vi.f
         onInvite={() => {}}
         onSettings={() => {}}
         onLeave={() => {}}
-        onLogout={() => {}}
-        onEditProfile={() => {}}
+        onOpenSettings={extra.onOpenSettings ?? (() => {})}
       />
     </MemoryRouter>,
   );
@@ -111,7 +110,7 @@ describe("team 菜单 / 用户菜单（HeroUI Dropdown）", () => {
     setup("owner", "me");
     fireEvent.click(screen.getByRole("button", { name: "T 菜单" }));
     const items = await screen.findAllByRole("menuitem");
-    expect(items.map((i) => i.textContent)).toEqual(["邀请成员＋", "Team 设置⚙", "退出 Team你是所有者，不能退出 team。"]);
+    expect(items.map((i) => i.textContent)).toEqual(["邀请成员＋", "Team 设置", "退出 Team你是所有者，不能退出 team。"]);
     expect(items[2].getAttribute("aria-disabled")).toBe("true");
     expect(items[2].className).toContain("menu-item--danger");
   });
@@ -119,7 +118,7 @@ describe("team 菜单 / 用户菜单（HeroUI Dropdown）", () => {
     const onLeave = vi.fn();
     render(
       <MemoryRouter>
-        <ChannelSidebar team={team("member")} channels={channels} me={me} canManage={false} onCreateChannel={async () => {}} onInvite={() => {}} onSettings={() => {}} onLeave={onLeave} onLogout={() => {}} onEditProfile={() => {}} />
+        <ChannelSidebar team={team("member")} channels={channels} me={me} canManage={false} onCreateChannel={async () => {}} onInvite={() => {}} onSettings={() => {}} onLeave={onLeave} onOpenSettings={() => {}} />
       </MemoryRouter>,
     );
     fireEvent.click(screen.getByRole("button", { name: "T 菜单" }));
@@ -128,12 +127,22 @@ describe("team 菜单 / 用户菜单（HeroUI Dropdown）", () => {
     fireEvent.click(items[0]);
     await waitFor(() => expect(onLeave).toHaveBeenCalled());
   });
-  it("用户菜单：显示登录名，编辑个人资料 / 退出登录（红字）", async () => {
-    setup("member", "me");
+  it("用户栏：齿轮直接打开设置（不再弹菜单），头像打开设置里的个人资料", () => {
+    const onOpenSettings = vi.fn();
+    setup("member", "me", vi.fn(), { onOpenSettings });
     fireEvent.click(screen.getByRole("button", { name: "用户设置" }));
-    expect(await screen.findByText("已登录为 @me")).toBeTruthy();
+    expect(onOpenSettings).toHaveBeenLastCalledWith();
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(screen.queryByText("编辑个人资料")).toBeNull();
+    expect(screen.queryByText("退出登录")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "个人资料" }));
+    expect(onOpenSettings).toHaveBeenLastCalledWith("profile");
+  });
+  it("Team 设置菜单项不用齿轮图标（齿轮只代表用户设置）", async () => {
+    setup("owner", "me");
+    fireEvent.click(screen.getByRole("button", { name: "T 菜单" }));
     const items = await screen.findAllByRole("menuitem");
-    expect(items.map((i) => i.textContent)).toEqual(["编辑个人资料", "退出登录"]);
-    expect(items[1].className).toContain("menu-item--danger");
+    expect(items[1].textContent).not.toContain("⚙");
+    expect(items[1].querySelector("svg")).toBeTruthy();
   });
 });
