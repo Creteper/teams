@@ -1,0 +1,4 @@
+# copied from ../../skill/teams-bot-integration/SKILL.md at pack time
+/SKILL.md
+*.tgz
+node_modules/

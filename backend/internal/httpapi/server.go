@@ -23,6 +23,7 @@ import (
 	"github.com/creteper/teams/backend/internal/secretbox"
 	"github.com/creteper/teams/backend/internal/storage"
 	"github.com/creteper/teams/backend/internal/webhook"
+	"github.com/creteper/teams/backend/skill"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -40,6 +41,7 @@ type Server struct {
 	hookClient *http.Client
 	fetch      *http.Client
 	push       *pusher
+	skill      *skill.Bundle // nil if the embedded bundle is broken (endpoints → 503)
 	argon      auth.Argon2Params
 	mux        *http.ServeMux
 }
@@ -62,6 +64,14 @@ func New(cfg *config.Config, pool *pgxpool.Pool, store storage.Storage) (*Server
 		Lease: cfg.WebhookTimeout + 30*time.Second,
 	}
 	s.worker.Notify = s.notifyRun
+	if b, err := skill.Load(); err != nil {
+		slog.Error("bot skill bundle unavailable", "err", err)
+	} else {
+		if !b.InSync() {
+			slog.Warn("bot skill tarball is stale: SKILL.md changed without repacking", "version", b.Version)
+		}
+		s.skill = b
+	}
 	s.routes()
 	return s, nil
 }

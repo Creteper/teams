@@ -51,7 +51,10 @@ backend/
 │   └── httpapi/                  # server.go（中间件、鉴权模式）、views.go（JSON 视图与查询）、
 │                                 # teams.go、invites.go、messages.go、uploads.go、bots.go、botruns.go、ws.go、routes.go、
 │                                 # channelstate.go（未读/置顶）、push.go（Web Push）、decline.go（bot 声明不回复）
+│                                 # skill.go（skill 下载接口）
 │                                 # *_test.go：集成测试（teams_test 库）
+├── skill/                        # Bot 接入 skill：teams-bot-integration/SKILL.md（唯一源文件）+ dist/teams-skill-<version>.tgz，go:embed 进二进制
+├── packages/teams-skill/         # 自托管 npm 包（private，不发布）：bin 把 SKILL.md 写到 ./.cursor/skills/…；npm run dist 打包到 skill/dist/
 ├── .env.example                  # 配置模板（只有占位符）
 └── go.mod
 ```

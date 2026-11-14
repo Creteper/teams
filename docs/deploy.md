@@ -522,6 +522,33 @@ sudo ln -sfn /srv/teams/frontend/releases/<VERSION> /srv/teams/frontend/current
 ```
 前后端接口有不兼容变更时：先发后端（保持向后兼容），再发前端。
 
+### B.9.1 Bot 接入 skill 包（随后端发布）
+
+SKILL.md 和安装它的 npm 包 `teams-skill-<version>.tgz` 都 go:embed 在 `teams-server` 二进制里（`backend/skill/`），按上面的后端发布流程换二进制即上线，**不需要单独上传文件，也不需要改 nginx**：下载地址都在 `/api/v1/` 下，B.7a 的 `location /api/ { … proxy_pass $teams_backend; }`（Caddy 是 `handle /api/*`）已经转给后端；不发布到 npm。
+
+发布后验证：
+```bash
+curl -fsS https://teams.lovekaifa.com/api/v1/skill                                  # version / sha256 / install_command
+curl -sI  https://teams.lovekaifa.com/api/v1/downloads/teams-skill.tgz | grep -iE '^(HTTP|content-type|cache-control|etag)'
+curl -fsS https://teams.lovekaifa.com/api/v1/downloads/teams-skill.tgz | shasum -a 256   # 与 /skill 的 sha256 一致
+cd "$(mktemp -d)" && npx -y https://teams.lovekaifa.com/api/v1/downloads/teams-skill.tgz && ls .cursor/skills/teams-bot-integration/
+```
+注意：`location /api/` 里的 `gzip_types` 不含 `application/gzip`，tgz 原样传输；nginx 不缓存后端响应，`Cache-Control` 由后端给出（固定地址 `no-cache`，带版本号的 `immutable`）。若前面有 CDN，固定地址会因 `no-cache` 每次回源验证 ETag。
+
+**更新流程**（bot 相关接口、字段、限流、webhook 载荷一改就要做；改 docs/api.md 的同一个提交里完成）：
+1. 改唯一源文件 `backend/skill/teams-bot-integration/SKILL.md`（保留开头的 frontmatter；只用 `<BOT_TOKEN>` 这类占位符，不写真实令牌）。
+2. 升版本：`backend/packages/teams-skill/package.json` 的 `version`（文档改动升 patch，结构变化升 minor）。
+3. 打包：
+   ```bash
+   cd backend/packages/teams-skill
+   npm test        # 临时目录里跑一遍安装器（默认路径 / 已存在退出 1 / --force / --dir）
+   npm run dist    # prepack 复制 SKILL.md → npm pack → backend/skill/dist/teams-skill-<version>.tgz，并删掉旧 tgz
+   ```
+4. 校验：`cd backend && go test ./skill/ ./internal/httpapi/ -run 'Bundle|SkillMD|SkillDownloads'`（SKILL.md 与 tgz 不一致、版本号不一致、dist 里不是恰好一个 tgz 都会失败）。
+5. 提交 `backend/skill/`（含新 tgz、删除的旧 tgz）、`backend/packages/teams-skill/package.json`，以及对应的 docs 改动；然后按 B.9 发布后端。
+
+旧版本号的带版本地址在新版本上线后会 404（二进制里只带当前版本）；需要固定某版本的使用者请自己保存 tgz（`sha256` 见 `/api/v1/skill`）。
+
 ### B.10 备份
 
 `/usr/local/bin/teams-backup.sh`（`root`，755）：
@@ -608,6 +635,7 @@ sudo -u postgres dropdb teams_restore_test
 - [ ] `https://teams.lovekaifa.com/api/v1/healthz` 返回 ok，证书有效；`http://` 自动跳转 https。
 - [ ] 浏览器：注册/登录、建 team、发消息、上传图片和视频（接近 100MB）、WebSocket 实时收到消息、刷新 `/invite/<code>` 页面不 404。
 - [ ] 配置一个测试 bot，webhook 指向 Grok Bot 的 HTTPS 地址，`POST /bots/{id}/webhook/test` 返回 ok；@bot 后频道出现 `bot.run.*` 状态与回复。
+- [ ] `https://teams.lovekaifa.com/api/v1/skill` 返回当前 skill 版本；`npx -y https://teams.lovekaifa.com/api/v1/downloads/teams-skill.tgz` 在空目录里写出 `.cursor/skills/teams-bot-integration/SKILL.md`（B.9.1）。
 - [ ] 备份 timer 已启用，手动跑一次 `teams-backup.sh`，`/var/backups/teams` 中可见文件（配置了 OSS 的话 OSS 中也可见）；做一次恢复演练。
 - [ ] （用户决定后）SSH 改为仅密钥登录，部署用的口令已轮换。
 - [ ] `unattended-upgrades` 开启安全更新；`journalctl -u teams`、`/var/log/nginx/teams-*.log` 有轮转。

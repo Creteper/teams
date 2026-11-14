@@ -1,0 +1,23 @@
+{
+  "name": "teams-skill",
+  "version": "1.0.0",
+  "description": "Install the TeAms bot integration skill (teams-bot-integration/SKILL.md) into ./.cursor/skills",
+  "private": true,
+  "license": "UNLICENSED",
+  "bin": {
+    "teams-skill": "bin/teams-skill.js"
+  },
+  "files": [
+    "bin/",
+    "SKILL.md",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "prepack": "node scripts/sync-skill.js",
+    "dist": "node scripts/pack.js",
+    "test": "node scripts/smoke.js"
+  }
+}

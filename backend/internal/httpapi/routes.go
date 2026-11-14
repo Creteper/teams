@@ -93,6 +93,10 @@ func (s *Server) routes() {
 
 	h("GET "+v+"/ws", public, s.serveWS)
 
+	h("GET "+v+"/skill", public, s.getSkill)
+	h("GET "+v+"/skill/SKILL.md", public, s.getSkillMD)
+	h("GET "+v+"/downloads/{file}", public, s.download)
+
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, r, apierr.New(http.StatusNotFound, "not_found", "接口不存在"))
 	})

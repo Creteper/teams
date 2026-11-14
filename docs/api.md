@@ -699,6 +699,54 @@ curl -s "$BASE/api/v1/teams/<team_id>/members/<member_id>" -H "$AUTH"
 - 用户会话不受这条限制。
 - 建议按需拉取（例如每次被 @ 只拉一两页），不要轮询——实时消息请用 WebSocket（§9）或 webhook。
 
+### 8.7 Bot 接入 skill 下载（自托管 npm 包）
+
+给要接入 TeAms 的 AI agent 用的说明书 `teams-bot-integration/SKILL.md`（接入步骤、webhook 载荷、bot 令牌接口、什么时候该 / 不该调用、防循环、排障），连同安装它的 npm 包 `teams-skill` 一起 **go:embed 进后端二进制**，随后端版本发布；**不发布到 npm 公共仓库**（`package.json` 里 `"private": true`，不影响 npx 从 tgz 地址安装）。以下接口都**不需要登录**（不带令牌即可；带 bot 令牌也不计入 §8.6 的 120 次/分钟）。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/v1/skill` | 设置页用的元信息（JSON，`Cache-Control: no-cache`）；`?include=skill_md` 时多返回 `skill_md` 原文 |
+| GET | `/api/v1/skill/SKILL.md` | SKILL.md 原文，`text/markdown; charset=utf-8`，`no-cache`，带 `ETag` |
+| GET | `/api/v1/downloads/teams-skill.tgz` | **固定地址**，始终是当前后端里的最新版；`Cache-Control: no-cache`（每次用 `ETag` 重新验证） |
+| GET | `/api/v1/downloads/teams-skill-<version>.tgz` | **带版本号**的地址；`Cache-Control: public, max-age=31536000, immutable`。只有当前版本可下载，其它版本号（含旧版本）→ 404 `not_found` |
+
+线上完整地址：`https://teams.lovekaifa.com/api/v1/skill`、`https://teams.lovekaifa.com/api/v1/skill/SKILL.md`、`https://teams.lovekaifa.com/api/v1/downloads/teams-skill.tgz`、`https://teams.lovekaifa.com/api/v1/downloads/teams-skill-<version>.tgz`。tgz 响应：`Content-Type: application/gzip`、`Content-Disposition: attachment; filename="teams-skill-<version>.tgz"`、`ETag: "<sha256>"`、`X-TeAms-Skill-Version: <version>`；支持 `If-None-Match`（304）、HEAD 和 Range。
+
+`GET /api/v1/skill` →
+```json
+{
+  "name": "teams-skill",
+  "version": "1.0.0",
+  "install_command": "npx -y https://teams.lovekaifa.com/api/v1/downloads/teams-skill.tgz",
+  "tgz_url": "https://teams.lovekaifa.com/api/v1/downloads/teams-skill.tgz",
+  "versioned_url": "https://teams.lovekaifa.com/api/v1/downloads/teams-skill-1.0.0.tgz",
+  "skill_md_url": "https://teams.lovekaifa.com/api/v1/skill/SKILL.md",
+  "sha256": "<tgz 的 sha256，hex>",
+  "size_bytes": 12994,
+  "skill_name": "teams-bot-integration",
+  "install_path": ".cursor/skills/teams-bot-integration/SKILL.md",
+  "skill_md_sha256": "<SKILL.md 的 sha256，hex>"
+}
+```
+- 所有 URL 都由 `TEAMS_PUBLIC_BASE_URL` 拼出（本地开发是 `http://127.0.0.1:8090/...`）。`sha256` 是 tgz 文件本身的 SHA-256，两个下载地址返回同一份字节。
+- `install_command` 带 `-y`，免去 npx 的"是否安装"确认（AI agent 在非交互终端里也不会卡住）。
+- 嵌入的包损坏时（不应发生，测试会拦住）这几个接口返回 `503 skill_unavailable`。
+
+**安装器（`teams-skill` 的 bin，Node 18+，无依赖）**
+
+```bash
+npx -y https://teams.lovekaifa.com/api/v1/downloads/teams-skill.tgz                 # → ./.cursor/skills/teams-bot-integration/SKILL.md
+npx -y https://teams.lovekaifa.com/api/v1/downloads/teams-skill.tgz --force         # 已存在时覆盖（更新）
+npx -y https://teams.lovekaifa.com/api/v1/downloads/teams-skill.tgz --dir ./agent   # → ./agent/SKILL.md
+npx -y https://teams.lovekaifa.com/api/v1/downloads/teams-skill.tgz --version       # 打印版本
+```
+- 默认目标相对**当前目录**：`./.cursor/skills/teams-bot-integration/SKILL.md`，目录不存在会创建。
+- `--dir <目录>`：把 `SKILL.md` 放到这个目录下（写 `<目录>/SKILL.md`，不是把 `<目录>` 当文件名）。
+- 目标已存在且没加 `--force`：不覆盖，stderr 提示「已存在，未覆盖。要更新请加 --force」，退出码 **1**；参数错误退出码 **2**；成功 0。
+- `--help` / `-h`、`--version` / `-v`。
+
+> **接口一改，就要同步更新 SKILL.md 并重新打包**：本文档里与 bot 相关的接口、字段、限流、webhook 载荷有任何变化，都要同时改 `backend/skill/teams-bot-integration/SKILL.md`、升 `backend/packages/teams-skill/package.json` 的版本号、`npm run dist` 重新生成 tgz 并一起提交（流程见 deploy.md「Bot 接入 skill 包」）。`go test ./skill/` 会在 SKILL.md 改了但没重新打包、或版本号不一致时失败。
+
 ---
 
 ## 9. WebSocket
@@ -866,3 +914,4 @@ IP 取连接地址；只有来自本机回环的请求（即 Caddy 反代）才�
 35. **Bot 用自己的令牌查看历史和发消息**（§8.6，新增文档节）：核对并测试了 bot 令牌可以列频道、按 `before` / `after` 分页读消息、读单条（`GET /messages/{id}`）、带 `reply_to` 和 @ 发消息、编辑删除自己的消息、查成员列表和单个成员；这些接口原本就支持，权限限于 bot 所在 team（别的 team → 404，改删别人的消息 → 403）。webhook 载荷**不**携带上下文消息，需要上下文时 bot 自己拉（§7.2）。
 36. **webhook payload 的 `reply` 末尾新增 `history`**：`{ "method": "GET", "url": ".../channels/<channel_id>/messages?before=<message.seq>&limit=50" }`，即"拉触发消息之前的历史"的调用方式；`reply` 原有字段和顶层字段顺序不变。
 37. **bot 令牌请求限流**（§8.6、§11）：每个 bot 每分钟最多 120 次，计入 bot 令牌的所有 GET 请求和编辑 / 删除消息（`PATCH` / `DELETE /messages/{id}`）；超出返回 `429 rate_limited` + `Retry-After`（秒，向上取整）。发消息仍按每 bot 每频道 30 条/分钟单独计算、不占这 120 次；用户会话不受影响。之前文档写的"读取不限流"作废。
+38. **Bot 接入 skill 下载**（§8.7）：新增公开接口 `GET /api/v1/skill`（版本、`install_command`、`tgz_url`、`versioned_url`、`skill_md_url`、`sha256` 等；`?include=skill_md` 带原文）、`GET /api/v1/skill/SKILL.md`、`GET /api/v1/downloads/teams-skill.tgz`（固定地址，`no-cache`）和 `GET /api/v1/downloads/teams-skill-<version>.tgz`（`immutable`）。SKILL.md 与 npm 包 `teams-skill`（`npx -y <tgz 地址>` 写到 `./.cursor/skills/teams-bot-integration/SKILL.md`，支持 `--dir`、`--force`、`--help`、`--version`）go:embed 进后端二进制，随后端发布，不发布到 npm。路径都在 `/api/` 下，nginx 不用改。今后 bot 相关接口有变化时，必须同步更新 SKILL.md、升版本并重新打包。
