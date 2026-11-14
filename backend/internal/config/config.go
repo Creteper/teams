@@ -40,6 +40,10 @@ type Config struct {
 	BotProfileRatePerMinute    int // PATCH /bots/me etc; 0 disables
 	InvitePreviewRatePerMinute int // per IP; 0 disables
 	LogLevel                   slog.Level
+	// Web Push (VAPID). Push is disabled unless all three are set.
+	VAPIDPublicKey  string
+	VAPIDPrivateKey string
+	VAPIDSubject    string
 	// Argon2 parameters (tests lower these).
 	Argon2Time    uint32
 	Argon2MemKiB  uint32
@@ -187,8 +191,51 @@ func FromLookup(lookup func(string) (string, bool)) (*Config, error) {
 	if c.MaxTriggerDepth < 0 {
 		errs = append(errs, errors.New("TEAMS_MAX_TRIGGER_DEPTH must be >= 0"))
 	}
+	c.VAPIDPublicKey = get("TEAMS_VAPID_PUBLIC_KEY", "")
+	c.VAPIDPrivateKey = get("TEAMS_VAPID_PRIVATE_KEY", "")
+	c.VAPIDSubject = get("TEAMS_VAPID_SUBJECT", "")
+	if err := c.validateVAPID(); err != nil {
+		errs = append(errs, err)
+	}
 	if c.WebhookWorkers < 1 {
 		c.WebhookWorkers = 1
 	}
 	return c, errors.Join(errs...)
+}
+
+// PushEnabled reports whether Web Push is configured.
+func (c *Config) PushEnabled() bool {
+	return c.VAPIDPublicKey != "" && c.VAPIDPrivateKey != "" && c.VAPIDSubject != ""
+}
+
+func decodeB64URL(s string) ([]byte, error) {
+	s = strings.TrimRight(s, "=")
+	return base64.RawURLEncoding.DecodeString(s)
+}
+
+// validateVAPID: all three unset = push disabled; partially set or malformed
+// = configuration error (never echoes the key values).
+func (c *Config) validateVAPID() error {
+	n := 0
+	for _, v := range []string{c.VAPIDPublicKey, c.VAPIDPrivateKey, c.VAPIDSubject} {
+		if v != "" {
+			n++
+		}
+	}
+	if n == 0 {
+		return nil
+	}
+	if n != 3 {
+		return errors.New("TEAMS_VAPID_PUBLIC_KEY, TEAMS_VAPID_PRIVATE_KEY and TEAMS_VAPID_SUBJECT must be set together (or all left empty to disable push)")
+	}
+	if pub, err := decodeB64URL(c.VAPIDPublicKey); err != nil || len(pub) != 65 || pub[0] != 4 {
+		return errors.New("TEAMS_VAPID_PUBLIC_KEY must be an uncompressed P-256 public key (65 bytes, base64url)")
+	}
+	if priv, err := decodeB64URL(c.VAPIDPrivateKey); err != nil || len(priv) != 32 {
+		return errors.New("TEAMS_VAPID_PRIVATE_KEY must be a P-256 private key (32 bytes, base64url)")
+	}
+	if !strings.HasPrefix(c.VAPIDSubject, "mailto:") && !strings.HasPrefix(c.VAPIDSubject, "https://") {
+		return errors.New("TEAMS_VAPID_SUBJECT must start with mailto: or https://")
+	}
+	return nil
 }

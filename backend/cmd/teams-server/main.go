@@ -41,6 +41,11 @@ func run() error {
 	if cfg.AllowInsecureLocal {
 		slog.Warn("TEAMS_WEBHOOK_ALLOW_INSECURE_LOCAL is on: http and private/loopback webhook & avatar URLs are allowed (dev only)")
 	}
+	if cfg.PushEnabled() {
+		slog.Info("web push enabled (VAPID configured)")
+	} else {
+		slog.Info("web push disabled: TEAMS_VAPID_PUBLIC_KEY / TEAMS_VAPID_PRIVATE_KEY / TEAMS_VAPID_SUBJECT not set")
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 

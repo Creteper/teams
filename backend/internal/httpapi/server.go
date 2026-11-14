@@ -39,6 +39,7 @@ type Server struct {
 	worker     *webhook.Worker
 	hookClient *http.Client
 	fetch      *http.Client
+	push       *pusher
 	argon      auth.Argon2Params
 	mux        *http.ServeMux
 }
@@ -54,6 +55,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, store storage.Storage) (*Server
 	}
 	s.hookClient = netguard.NewClient(netguard.Options{Timeout: cfg.WebhookTimeout, AllowPrivate: cfg.AllowInsecureLocal, RequireHTTPS: true, MaxRedirects: 0})
 	s.fetch = netguard.NewClient(netguard.Options{Timeout: cfg.AvatarFetchTimeout, AllowPrivate: cfg.AllowInsecureLocal, RequireHTTPS: false, MaxRedirects: 3})
+	s.push = newPusher(cfg.VAPIDPublicKey, cfg.VAPIDPrivateKey, cfg.VAPIDSubject, cfg.AllowInsecureLocal)
 	s.worker = &webhook.Worker{
 		Pool: pool, Box: box, Client: s.hookClient, Build: s.buildDeliveryPayload,
 		Delays: cfg.WebhookRetryDelays, Poll: cfg.WebhookPollInterval, Workers: cfg.WebhookWorkers,

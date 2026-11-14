@@ -54,6 +54,7 @@ type memberView struct {
 	AvatarURL   *string `json:"avatar_url"`
 	AvatarShape *string `json:"avatar_shape"`
 	AvatarColor *string `json:"avatar_color"`
+	Description *string `json:"description"` // bot description; null for users
 	Role        string  `json:"role"`
 	JoinedAt    jsTime  `json:"joined_at"`
 	Deleted     bool    `json:"deleted,omitempty"`
@@ -61,7 +62,7 @@ type memberView struct {
 
 const memberSelect = `SELECT m.id, m.team_id, m.type, m.user_id, m.bot_id, m.role, m.joined_at,
 	COALESCE(u.display_name, b.display_name, ''), COALESCE(u.username, b.name, ''),
-	COALESCE(u.avatar_id, b.avatar_id), b.avatar_shape, b.avatar_color,
+	COALESCE(u.avatar_id, b.avatar_id), b.avatar_shape, b.avatar_color, b.description,
 	(m.left_at IS NOT NULL OR b.deleted_at IS NOT NULL)
 	FROM team_members m LEFT JOIN users u ON u.id = m.user_id LEFT JOIN bots b ON b.id = m.bot_id `
 
@@ -71,7 +72,7 @@ func scanMembers(rows pgx.Rows) ([]memberView, error) {
 		var joined time.Time
 		var av *string
 		err := r.Scan(&m.ID, &m.TeamID, &m.Type, &m.UserID, &m.BotID, &m.Role, &joined,
-			&m.DisplayName, &m.Username, &av, &m.AvatarShape, &m.AvatarColor, &m.Deleted)
+			&m.DisplayName, &m.Username, &av, &m.AvatarShape, &m.AvatarColor, &m.Description, &m.Deleted)
 		m.JoinedAt = jsTime(joined)
 		m.AvatarURL = avatarURL(av)
 		return m, err
@@ -175,6 +176,18 @@ type channelView struct {
 	CreatedByMemberID *string `json:"created_by_member_id"`
 	LastMessageSeq    int64   `json:"last_message_seq"`
 	CreatedAt         jsTime  `json:"created_at"`
+	// Per-user state; only present in responses to a user session
+	// (GET channel list / single channel), never in team-wide WS events.
+	*channelUserState
+}
+
+// channelUserState is the caller's own read/pin state of a channel.
+type channelUserState struct {
+	Pinned           bool    `json:"pinned"`
+	PinnedAt         *jsTime `json:"pinned_at"`
+	LastReadSeq      int64   `json:"last_read_seq"`
+	UnreadCount      int     `json:"unread_count"`
+	HasUnreadMention bool    `json:"has_unread_mention"`
 }
 
 const channelSelect = `SELECT c.id, c.team_id, c.name, c.topic, c.is_default, c.created_by_member_id,
@@ -303,6 +316,7 @@ type attachmentView struct {
 type messageView struct {
 	ID           string           `json:"id"`
 	Seq          int64            `json:"seq"`
+	Kind         string           `json:"kind"`
 	TeamID       string           `json:"team_id"`
 	ChannelID    string           `json:"channel_id"`
 	Sender       senderView       `json:"sender"`
@@ -350,7 +364,7 @@ func (s *Server) loadMessages(ctx context.Context, q querier, ids []string) ([]m
 	if len(ids) == 0 {
 		return []messageView{}, nil
 	}
-	rows, err := q.Query(ctx, `SELECT id, seq, team_id, channel_id, sender_member_id, content, reply_to, trigger_depth,
+	rows, err := q.Query(ctx, `SELECT id, seq, kind, team_id, channel_id, sender_member_id, content, reply_to, trigger_depth,
 		created_at, edited_at, deleted_at FROM messages WHERE id = ANY($1::uuid[])`, ids)
 	if err != nil {
 		return nil, err
@@ -365,7 +379,7 @@ func (s *Server) loadMessages(ctx context.Context, q querier, ids []string) ([]m
 		var x raw
 		var created time.Time
 		var edited, deleted *time.Time
-		err := r.Scan(&x.v.ID, &x.v.Seq, &x.v.TeamID, &x.v.ChannelID, &x.sender, &x.v.Content, &x.v.ReplyTo,
+		err := r.Scan(&x.v.ID, &x.v.Seq, &x.v.Kind, &x.v.TeamID, &x.v.ChannelID, &x.sender, &x.v.Content, &x.v.ReplyTo,
 			&x.v.TriggerDepth, &created, &edited, &deleted)
 		x.v.CreatedAt = jsTime(created)
 		x.v.EditedAt = tp(edited)

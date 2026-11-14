@@ -293,14 +293,15 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 	return len(ds), nil
 }
 
-// setRun updates run_status unless the run already completed; returns
-// whether it changed (so events are not emitted after completion).
+// setRun updates run_status unless the run already ended (completed, or
+// declined by the bot); returns whether it changed (so events are not
+// emitted after the run ended).
 func (w *Worker) setRun(ctx context.Context, d Delivery, runStatus, reason string) bool {
 	if d.MessageID == nil {
 		return false
 	}
 	tag, err := w.Pool.Exec(ctx, `UPDATE webhook_deliveries SET run_status=$2, run_reason=NULLIF($3,''), run_updated_at=now()
-		WHERE id=$1 AND run_status IS DISTINCT FROM 'completed'`, d.ID, runStatus, reason)
+		WHERE id=$1 AND COALESCE(run_status, '') NOT IN ('completed', 'declined')`, d.ID, runStatus, reason)
 	return err == nil && tag.RowsAffected() > 0
 }
 

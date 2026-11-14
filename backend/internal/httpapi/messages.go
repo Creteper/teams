@@ -240,6 +240,13 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	s.hub.PublishTeam(c.TeamID, "message.created", m)
+	if p.Bot == nil {
+		// your own message marks the channel read up to it (synced to your other devices)
+		if changed, err := advanceRead(ctx, s.pool, p.UserID, c.ID, m.Seq); err == nil && changed {
+			s.publishChannelRead(ctx, p.UserID, c.ID)
+		}
+	}
+	s.notifyMentions(m, c.Name)
 	for _, did := range completed {
 		s.hub.PublishTeam(c.TeamID, "bot.run.completed", runData(c.TeamID, c.ID, a.MemberID, replyToID, did, map[string]any{"reply_message_id": msgID}))
 	}
@@ -458,6 +465,9 @@ func (s *Server) editMessage(w http.ResponseWriter, r *http.Request) error {
 	if m.Deleted {
 		return apierr.NotFound("消息")
 	}
+	if m.Kind != "message" {
+		return apierr.Forbidden("这类消息不能编辑")
+	}
 	var body struct {
 		Content string `json:"content"`
 	}
@@ -602,11 +612,23 @@ type payloadReplyHint struct {
 	ReplyTo string `json:"reply_to"`
 }
 
+type payloadDeclineHint struct {
+	Reason string `json:"reason"`
+}
+
+// payloadDecline tells the bot how to state "I won't reply" (§7.7).
+type payloadDecline struct {
+	Method   string             `json:"method"`
+	URL      string             `json:"url"`
+	BodyHint payloadDeclineHint `json:"body_hint"`
+}
+
 type payloadReply struct {
 	Method   string           `json:"method"`
 	URL      string           `json:"url"`
 	Auth     string           `json:"auth"`
 	BodyHint payloadReplyHint `json:"body_hint"`
+	Decline  payloadDecline   `json:"decline"`
 }
 
 type payloadMention struct {
@@ -685,7 +707,9 @@ func (s *Server) buildDeliveryPayload(ctx context.Context, d webhook.Delivery) (
 		Message: payloadMessage{ID: m.ID, Seq: m.Seq, ReplyTo: m.ReplyTo, TriggerDepth: m.TriggerDepth, CreatedAt: m.CreatedAt,
 			Mentions: mentions, Attachments: atts, ContentPlain: mention.Plain(m.Content, names)},
 		Reply: payloadReply{Method: "POST", URL: s.cfg.PublicBaseURL + "/api/v1/channels/" + ch.ID + "/messages",
-			Auth: "Authorization: Bearer <BOT_TOKEN>", BodyHint: payloadReplyHint{Content: "<@" + sm.ID + "> …", ReplyTo: m.ID}},
+			Auth: "Authorization: Bearer <BOT_TOKEN>", BodyHint: payloadReplyHint{Content: "<@" + sm.ID + "> …", ReplyTo: m.ID},
+			Decline: payloadDecline{Method: "POST", URL: s.cfg.PublicBaseURL + "/api/v1/messages/" + m.ID + "/decline",
+				BodyHint: payloadDeclineHint{Reason: "（可选，≤200 字）"}}},
 		Team: team,
 		Bot:  s.payloadBot(b),
 	}

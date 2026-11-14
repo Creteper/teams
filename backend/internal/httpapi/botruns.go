@@ -68,7 +68,7 @@ func (s *Server) notifyRun(ctx context.Context, d webhook.Delivery, ev webhook.R
 func completeRuns(ctx context.Context, tx pgx.Tx, botMemberID, replyTo, replyID string) ([]string, error) {
 	rows, err := tx.Query(ctx, `UPDATE webhook_deliveries d SET run_status='completed', reply_message_id=$3, run_updated_at=now(), run_reason=NULL
 		FROM bots b WHERE b.id=d.bot_id AND b.member_id=$1 AND d.message_id=$2 AND d.event='message.mention'
-		AND d.run_status IS DISTINCT FROM 'completed' RETURNING d.id`, botMemberID, replyTo, replyID)
+		AND COALESCE(d.run_status, '') NOT IN ('completed', 'declined') RETURNING d.id`, botMemberID, replyTo, replyID)
 	if err != nil {
 		return nil, err
 	}

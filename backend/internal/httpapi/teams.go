@@ -451,6 +451,27 @@ func (s *Server) listMembers(w http.ResponseWriter, r *http.Request) error {
 	return writeList(w, ms, next, hasMore)
 }
 
+// getMember handles GET /teams/{team_id}/members/{member_id}: one member's
+// profile (also members who already left / deleted bots, flagged deleted).
+func (s *Server) getMember(w http.ResponseWriter, r *http.Request) error {
+	teamID, _, err := s.teamIDParam(r)
+	if err != nil {
+		return err
+	}
+	mid, err := pathID(r, "member_id", "成员")
+	if err != nil {
+		return err
+	}
+	m, err := loadMember(r.Context(), s.pool, mid)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && m.TeamID != teamID) {
+		return apierr.NotFound("成员")
+	}
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, m)
+}
+
 func (s *Server) addMember(w http.ResponseWriter, r *http.Request) error {
 	teamID, a, err := s.teamIDParam(r)
 	if err != nil {
@@ -613,6 +634,9 @@ func (s *Server) listChannels(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
+	if err := s.attachChannelStates(r.Context(), principalFrom(r.Context()), id, cs); err != nil {
+		return err
+	}
 	return writeList(w, cs, nil, false)
 }
 
@@ -678,7 +702,11 @@ func (s *Server) getChannel(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	return writeJSON(w, http.StatusOK, c)
+	cs := []channelView{*c}
+	if err := s.attachChannelStates(r.Context(), principalFrom(r.Context()), c.TeamID, cs); err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, cs[0])
 }
 
 func (s *Server) patchChannel(w http.ResponseWriter, r *http.Request) error {

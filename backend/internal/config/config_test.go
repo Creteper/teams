@@ -38,3 +38,42 @@ func TestDefaultsAndInsecureFlag(t *testing.T) {
 		t.Fatal("short key")
 	}
 }
+
+func TestVAPIDConfig(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	base := map[string]string{"TEAMS_DATABASE_URL": "x", "TEAMS_SECRET_KEY": key}
+	with := func(kv ...string) map[string]string {
+		m := map[string]string{}
+		for k, v := range base {
+			m[k] = v
+		}
+		for i := 0; i < len(kv); i += 2 {
+			m[kv[i]] = kv[i+1]
+		}
+		return m
+	}
+	c, err := FromLookup(lookup(base))
+	if err != nil || c.PushEnabled() {
+		t.Fatalf("push should be off by default: %v", err)
+	}
+	pub := make([]byte, 65)
+	pub[0] = 4
+	pubS := base64.RawURLEncoding.EncodeToString(pub)
+	privS := base64.RawURLEncoding.EncodeToString(make([]byte, 32))
+	c, err = FromLookup(lookup(with("TEAMS_VAPID_PUBLIC_KEY", pubS, "TEAMS_VAPID_PRIVATE_KEY", privS, "TEAMS_VAPID_SUBJECT", "mailto:ops@example.com")))
+	if err != nil || !c.PushEnabled() {
+		t.Fatalf("valid vapid: %v", err)
+	}
+	for _, m := range []map[string]string{
+		with("TEAMS_VAPID_PUBLIC_KEY", pubS),
+		with("TEAMS_VAPID_PUBLIC_KEY", "short", "TEAMS_VAPID_PRIVATE_KEY", privS, "TEAMS_VAPID_SUBJECT", "mailto:a@b"),
+		with("TEAMS_VAPID_PUBLIC_KEY", pubS, "TEAMS_VAPID_PRIVATE_KEY", "c2hvcnQ", "TEAMS_VAPID_SUBJECT", "mailto:a@b"),
+		with("TEAMS_VAPID_PUBLIC_KEY", pubS, "TEAMS_VAPID_PRIVATE_KEY", privS, "TEAMS_VAPID_SUBJECT", "ops@example.com"),
+	} {
+		if _, err := FromLookup(lookup(m)); err == nil {
+			t.Fatalf("expected error for %v", m)
+		} else if strings.Contains(err.Error(), privS) {
+			t.Fatal("error leaks key")
+		}
+	}
+}

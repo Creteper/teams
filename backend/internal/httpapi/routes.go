@@ -33,6 +33,7 @@ func (s *Server) routes() {
 
 	h("GET "+v+"/teams/{team_id}/members", anyAuth, s.listMembers)
 	h("POST "+v+"/teams/{team_id}/members", userOnly, s.addMember)
+	h("GET "+v+"/teams/{team_id}/members/{member_id}", anyAuth, s.getMember)
 	h("PATCH "+v+"/teams/{team_id}/members/{member_id}", userOnly, s.patchMember)
 	h("DELETE "+v+"/teams/{team_id}/members/me", userOnly, s.leaveTeam)
 	h("DELETE "+v+"/teams/{team_id}/members/{member_id}", userOnly, s.removeMember)
@@ -48,6 +49,10 @@ func (s *Server) routes() {
 	h("GET "+v+"/channels/{channel_id}", anyAuth, s.getChannel)
 	h("PATCH "+v+"/channels/{channel_id}", userOnly, s.patchChannel)
 	h("DELETE "+v+"/channels/{channel_id}", userOnly, s.deleteChannel)
+	h("POST "+v+"/channels/{channel_id}/read", userOnly, s.markRead)
+	h("PUT "+v+"/channels/{channel_id}/pin", userOnly, s.setPin(true))
+	h("DELETE "+v+"/channels/{channel_id}/pin", userOnly, s.setPin(false))
+	h("GET "+v+"/me/unread", userOnly, s.getMyUnread)
 
 	h("GET "+v+"/channels/{channel_id}/messages", anyAuth, s.listMessages)
 	h("POST "+v+"/channels/{channel_id}/messages", anyAuth, s.sendMessage)
@@ -55,6 +60,7 @@ func (s *Server) routes() {
 	h("GET "+v+"/messages/{message_id}", anyAuth, s.getMessage)
 	h("PATCH "+v+"/messages/{message_id}", anyAuth, s.editMessage)
 	h("DELETE "+v+"/messages/{message_id}", anyAuth, s.deleteMessage)
+	h("POST "+v+"/messages/{message_id}/decline", botOnly, s.declineMessage)
 
 	h("POST "+v+"/teams/{team_id}/attachments", anyAuth, s.uploadAttachment)
 	h("GET "+v+"/attachments/{attachment_id}", anyAuth, s.getAttachment)
@@ -80,6 +86,10 @@ func (s *Server) routes() {
 	h("POST "+v+"/bots/{bot_id}/webhook/signing-secret/rotate", userOnly, s.rotateSigningSecret)
 	h("POST "+v+"/bots/{bot_id}/webhook/test", userOnly, s.testWebhook)
 	h("GET "+v+"/bots/{bot_id}/webhook/deliveries", userOnly, s.listDeliveries)
+
+	h("GET "+v+"/push/vapid-public-key", userOnly, s.getVAPIDPublicKey)
+	h("POST "+v+"/push/subscriptions", userOnly, s.putPushSubscription)
+	h("DELETE "+v+"/push/subscriptions", userOnly, s.deletePushSubscription)
 
 	h("GET "+v+"/ws", public, s.serveWS)
 
