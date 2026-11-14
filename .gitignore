@@ -1,0 +1,30 @@
+# ---- OS / editor ----
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# ---- backend: 本地配置（含口令/密钥，绝不提交）----
+backend/.env
+backend/.env.*
+!backend/.env.example
+backend/config.local.*
+
+# ---- backend: 运行时数据 / 上传目录 ----
+backend/data/
+backend/uploads/
+backend/tmp/
+
+# ---- backend: 构建产物 / 测试产物 ----
+backend/bin/
+backend/dist/
+backend/teams-server
+*.test
+*.out
+coverage.*
+
+# ---- frontend: 依赖与构建产物（目录归 Tina 管，这里只做忽略）----
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+frontend/.env.*.local
