@@ -63,6 +63,8 @@ export default function TeamPage() {
   const [deletePending, setDeletePending] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [channelNotice, setChannelNotice] = useState<string | null>(null);
+  /** 当前频道被删跳转后，要把焦点放进哪个频道的输入框（否则焦点会落到侧栏别的频道的 ⋯ 上） */
+  const [focusComposerFor, setFocusComposerFor] = useState<string | null>(null);
   const [profileMemberId, setProfileMemberId] = useState<string | null>(null);
   const channelsRef = useRef<Channel[]>([]);
   useEffect(() => {
@@ -255,6 +257,7 @@ export default function TeamPage() {
           if (frame.data.id === channelId) {
             const fallback = defaultChannel(rest);
             setChannelNotice(`频道 #${removed?.name ?? ""} 已被删除，已切换到 #${fallback?.name ?? "默认频道"}`);
+            setFocusComposerFor(fallback?.id ?? null);
             navigate(fallback ? `/teams/${teamId}/channels/${fallback.id}` : `/teams/${teamId}`, { replace: true });
           }
           break;
@@ -451,6 +454,8 @@ export default function TeamPage() {
             <Composer
               key={channel.id}
               channelName={channel.name}
+              autoFocus={focusComposerFor === channel.id}
+              onAutoFocused={() => setFocusComposerFor(null)}
               members={members.filter((m) => m.id !== myMemberId)}
               onUpload={(file, opts) => api.uploadAttachment(token, teamId, file, opts)}
               onSend={({ content, attachments, mentionIds }) => {
@@ -532,6 +537,7 @@ export default function TeamPage() {
               setDeleteTarget(null);
               if (target.id === channelId) {
                 const fallback = defaultChannel(rest);
+                setFocusComposerFor(fallback?.id ?? null);
                 navigate(fallback ? `/teams/${teamId}/channels/${fallback.id}` : `/teams/${teamId}`, { replace: true });
               }
             } catch (e) {

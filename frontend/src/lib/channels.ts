@@ -30,7 +30,7 @@ export function channelNameError(name: string, channels: Channel[], selfId?: str
   const n = name.trim();
   const len = charCount(n);
   if (len < 1) return "频道名不能为空";
-  if (len > CHANNEL_NAME_MAX) return `频道名最多 ${CHANNEL_NAME_MAX} 个字符`;
+  if (len > CHANNEL_NAME_MAX) return `频道名不能超过 ${CHANNEL_NAME_MAX} 个字`;
   if (channels.some((c) => c.id !== selfId && c.name.toLowerCase() === n.toLowerCase())) return "已有同名频道";
   return null;
 }

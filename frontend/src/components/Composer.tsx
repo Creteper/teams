@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Attachment, Member } from "../api/types";
 import type { UploadOptions } from "../api/client";
 import {
@@ -33,8 +33,13 @@ export function Composer({
   members,
   onUpload,
   onSend,
+  autoFocus = false,
+  onAutoFocused,
 }: {
   channelName: string;
+  /** 挂载时把焦点放进输入框（例如当前频道被删、跳回默认频道后） */
+  autoFocus?: boolean;
+  onAutoFocused?(): void;
   members: Member[];
   onUpload(file: File, opts: UploadOptions): Promise<Attachment>;
   /** 发送交给外层（乐观显示 + 失败重发），这里调用后立即清空输入 */
@@ -50,6 +55,13 @@ export function Composer({
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!autoFocus) return;
+    textareaRef.current?.focus();
+    onAutoFocused?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoFocus]);
 
   const candidates = useMemo<(MentionCandidate & { member: Member })[]>(
     () => members.map((m) => ({ id: m.id, name: m.display_name, kind: m.type, member: m })),

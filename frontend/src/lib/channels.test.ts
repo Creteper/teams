@@ -27,7 +27,7 @@ describe("频道菜单权限（§5.1）", () => {
 describe("频道名校验 / 默认频道 / 错误提示", () => {
   it("1–64 字符、去空白、同名（忽略大小写，排除自己）", () => {
     expect(channelNameError("  ", [general, dev])).toBe("频道名不能为空");
-    expect(channelNameError("字".repeat(65), [])).toBe("频道名最多 64 个字符");
+    expect(channelNameError("字".repeat(65), [])).toBe("频道名不能超过 64 个字");
     expect(channelNameError("字".repeat(64), [])).toBeNull();
     expect(channelNameError("DEV", [general, dev])).toBe("已有同名频道");
     expect(channelNameError("dev", [general, dev], "d")).toBeNull();
