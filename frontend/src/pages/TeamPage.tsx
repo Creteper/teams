@@ -20,6 +20,9 @@ import { BotRunBar } from "../components/BotRunBar";
 import { TeamSettingsDialog } from "../components/TeamSettingsDialog";
 import { ProfileDialog } from "../components/ProfileDialog";
 import { ConfirmDialog } from "../components/ui";
+import { channelErrorText, defaultChannel } from "../lib/channels";
+import { RenameChannelDialog } from "../components/RenameChannelDialog";
+import { MemberProfileDialog } from "../components/MemberProfileDialog";
 import { optimisticRoleChange, syncMyRole, upsertMember, type RoleAction } from "../lib/memberRoles";
 import type { Attachment, MessageSender } from "../api/types";
 
@@ -27,7 +30,7 @@ import type { Attachment, MessageSender } from "../api/types";
 export default function TeamPage() {
   const { teamId = "", channelId } = useParams();
   const token = useToken();
-  const { user, logout } = useAuth();
+  const { user, logout, syncUser } = useAuth();
   const navigate = useNavigate();
   const { teams, reload: reloadTeams } = useTeams(token);
 
@@ -54,6 +57,17 @@ export default function TeamPage() {
   const [demoteTarget, setDemoteTarget] = useState<Member | null>(null);
   const [rolePendingId, setRolePendingId] = useState<string | null>(null);
   const [roleNotice, setRoleNotice] = useState<string | null>(null);
+  // 频道菜单：改名弹窗、删除确认；频道相关提示（如“当前频道已被删除”）
+  const [renameTarget, setRenameTarget] = useState<Channel | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Channel | null>(null);
+  const [deletePending, setDeletePending] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [channelNotice, setChannelNotice] = useState<string | null>(null);
+  const [profileMemberId, setProfileMemberId] = useState<string | null>(null);
+  const channelsRef = useRef<Channel[]>([]);
+  useEffect(() => {
+    channelsRef.current = channels;
+  }, [channels]);
   const maxSeqRef = useRef(0);
   const messagesRef = useRef<Message[]>([]);
   /** 加载失败已重试过的附件 id（只重试一次） */
@@ -216,6 +230,9 @@ export default function TeamPage() {
           // 原位替换（角色变化不打乱顺序）；是我自己时同步 my_role，入口/权限立即跟着变
           setMembers((prev) => upsertMember(prev, frame.data));
           setTeam((prev) => syncMyRole(prev, frame.data));
+          // 自己在别的窗口改了昵称 / 头像：同步左下角个人区
+          if (frame.type === "member.updated" && frame.data.type === "user" && frame.data.user_id === user?.id)
+            syncUser({ display_name: frame.data.display_name, avatar_url: frame.data.avatar_url });
           break;
         case "member.left":
           setMembers((prev) => prev.filter((m) => m.id !== frame.data.member_id));
@@ -228,10 +245,20 @@ export default function TeamPage() {
               : [...prev, frame.data],
           );
           break;
-        case "channel.deleted":
+        case "channel.deleted": {
+          const removed = channelsRef.current.find((c) => c.id === frame.data.id);
+          const rest = channelsRef.current.filter((c) => c.id !== frame.data.id);
           setChannels((prev) => prev.filter((c) => c.id !== frame.data.id));
-          if (frame.data.id === channelId) navigate(`/teams/${teamId}`, { replace: true });
+          setDeleteTarget((t) => (t?.id === frame.data.id ? null : t));
+          setRenameTarget((t) => (t?.id === frame.data.id ? null : t));
+          // 当前打开的频道被删：跳到默认频道并提示
+          if (frame.data.id === channelId) {
+            const fallback = defaultChannel(rest);
+            setChannelNotice(`频道 #${removed?.name ?? ""} 已被删除，已切换到 #${fallback?.name ?? "默认频道"}`);
+            navigate(fallback ? `/teams/${teamId}/channels/${fallback.id}` : `/teams/${teamId}`, { replace: true });
+          }
           break;
+        }
         case "team.updated":
           // 只合并公共字段，my_role / my_member_id 保留本地（推送给全员的对象不一定是“我”的视角）
           if (frame.data.id === teamId)
@@ -248,7 +275,7 @@ export default function TeamPage() {
           break;
       }
     });
-  }, [teamId, channelId, navigate]);
+  }, [teamId, channelId, navigate, user?.id, syncUser]);
 
   // 90 秒兜底：每 5 秒检查一次
   useEffect(() => {
@@ -316,7 +343,7 @@ export default function TeamPage() {
 
   if (!user) return null;
   if (!channelId && channels.length > 0 && channels[0].team_id === teamId) {
-    const general = channels.find((c) => c.name === "general") ?? channels[0];
+    const general = defaultChannel(channels) ?? channels[0];
     return <Navigate to={`/teams/${teamId}/channels/${general.id}`} replace />;
   }
   const channel = channels.find((c) => c.id === channelId);
@@ -360,6 +387,14 @@ export default function TeamPage() {
           setConfirm("logout");
         }}
         onEditProfile={() => setProfileOpen(true)}
+        myMemberId={myMemberId}
+        onChannelAction={(c, action) => {
+          if (action === "rename") setRenameTarget(c);
+          else if (action === "delete") {
+            setDeleteError(null);
+            setDeleteTarget(c);
+          }
+        }}
       />
 
       <main className="flex min-w-0 flex-1 flex-col">
@@ -374,6 +409,14 @@ export default function TeamPage() {
           ) : null}
         </header>
         {error ? <div className="bg-[#f23f43]/20 px-4 py-2 text-sm text-[#f23f43]">{error}</div> : null}
+        {channelNotice ? (
+          <div role="status" className="flex items-center gap-2 bg-[#f0b232]/15 px-4 py-2 text-sm text-[#f0b232]">
+            <span className="flex-1">{channelNotice}</span>
+            <button type="button" aria-label="关闭提示" onClick={() => setChannelNotice(null)} className="hover:text-white">
+              ✕
+            </button>
+          </div>
+        ) : null}
         {loading ? (
           <div className="flex flex-1 items-center justify-center">
             <Spinner />
@@ -443,7 +486,63 @@ export default function TeamPage() {
         }}
         notice={roleNotice}
         onDismissNotice={() => setRoleNotice(null)}
+        onProfile={(m) => setProfileMemberId(m.id)}
       />
+
+      {profileMemberId && members.some((m) => m.id === profileMemberId) ? (
+        <MemberProfileDialog
+          token={token}
+          member={members.find((m) => m.id === profileMemberId)!}
+          isMe={profileMemberId === myMemberId}
+          onClose={() => setProfileMemberId(null)}
+        />
+      ) : null}
+
+      {renameTarget ? (
+        <RenameChannelDialog
+          channel={renameTarget}
+          channels={channels}
+          onClose={() => setRenameTarget(null)}
+          onSubmit={async (name) => {
+            const c = await api.updateChannel(token, renameTarget.id, { name });
+            setChannels((prev) => prev.map((x) => (x.id === c.id ? c : x)));
+          }}
+        />
+      ) : null}
+
+      {deleteTarget ? (
+        <ConfirmDialog
+          title="删除频道"
+          message={
+            <>
+              确定删除 <span className="font-medium text-[#f2f3f5]">#{deleteTarget.name}</span> 吗？频道里的消息将无法再查看，此操作不能撤销。
+            </>
+          }
+          confirmText="删除频道"
+          pending={deletePending}
+          error={deleteError}
+          onConfirm={async () => {
+            const target = deleteTarget;
+            setDeletePending(true);
+            setDeleteError(null);
+            try {
+              await api.deleteChannel(token, target.id);
+              const rest = channelsRef.current.filter((c) => c.id !== target.id);
+              setChannels((prev) => prev.filter((c) => c.id !== target.id));
+              setDeleteTarget(null);
+              if (target.id === channelId) {
+                const fallback = defaultChannel(rest);
+                navigate(fallback ? `/teams/${teamId}/channels/${fallback.id}` : `/teams/${teamId}`, { replace: true });
+              }
+            } catch (e) {
+              setDeleteError(channelErrorText(e, "delete"));
+            } finally {
+              setDeletePending(false);
+            }
+          }}
+          onCancel={() => setDeleteTarget(null)}
+        />
+      ) : null}
 
       {demoteTarget ? (
         <ConfirmDialog

@@ -61,6 +61,23 @@ describe("成员列表：设为 / 取消管理员入口", () => {
     window.removeEventListener("error", onErr);
     expect(errors).toHaveLength(0);
   });
+  it("查看资料：普通成员也有「⋯」，对自己、owner、bot 都能用；角色项仍按权限", async () => {
+    const onProfile = vi.fn();
+    render(<MemberList members={members} roles={{ myRole: "member", myMemberId: "c", onAction: () => {} }} onProfile={onProfile} />);
+    for (const n of ["Alice", "Bob", "Carol", "Grok"]) expect(screen.getByLabelText(`${n} 的成员操作`)).toBeTruthy();
+    fireEvent.contextMenu(screen.getByText("Grok"));
+    const items = await screen.findAllByRole("menuitem");
+    expect(items.map((i) => i.textContent)).toEqual(["查看资料"]);
+    fireEvent.click(items[0]);
+    await waitFor(() => expect(onProfile).toHaveBeenCalledWith(expect.objectContaining({ id: "b" })));
+  });
+  it("owner 对管理员：查看资料 + 取消管理员（红字）", async () => {
+    render(<MemberList members={members} roles={{ myRole: "owner", myMemberId: "o", onAction: () => {} }} onProfile={() => {}} />);
+    fireEvent.contextMenu(screen.getByText("Bob"));
+    const items = await screen.findAllByRole("menuitem");
+    expect(items.map((i) => i.textContent)).toEqual(["查看资料", "取消管理员"]);
+    expect(items[1].className).toContain("menu-item--danger");
+  });
   it("失败提示显示在成员列表顶部，可关闭", () => {
     const onDismiss = vi.fn();
     render(<MemberList members={members} notice="设为管理员失败（Carol）：你没有权限修改这个成员的角色" onDismissNotice={onDismiss} />);

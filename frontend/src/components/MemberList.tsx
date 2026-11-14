@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { Dropdown, Label } from "@heroui/react";
 import type { Member } from "../api/types";
 import { roleLabel } from "../lib/roles";
 import { ROLE_ACTION_TEXT, roleActionFor, type RoleAction } from "../lib/memberRoles";
 import { BotBadge, MemberAvatar } from "./MemberAvatar";
 import { CrownIcon } from "./ui";
+import { RowActionsMenu, type RowAction } from "./RowActionsMenu";
 
 export interface MemberRoleControls {
   myRole: string | null | undefined;
@@ -24,6 +24,7 @@ export function MemberList({
   roles,
   notice,
   onDismissNotice,
+  onProfile,
 }: {
   members: Member[];
   onInvite?: () => void;
@@ -31,6 +32,8 @@ export function MemberList({
   /** 改角色失败等提示 */
   notice?: string | null;
   onDismissNotice?: () => void;
+  /** 查看资料：所有人对任何成员可用（含自己、owner、bot） */
+  onProfile?: (member: Member) => void;
 }) {
   const order = { owner: 0, admin: 1, member: 2, bot: 3 } as const;
   const users = members.filter((m) => m.type === "user").sort((a, b) => order[a.role] - order[b.role]);
@@ -54,14 +57,32 @@ export function MemberList({
           </button>
         </div>
       ) : null}
-      <Group title={`成员 — ${users.length}`} items={users} roles={roles} />
-      <Group title={`Bot — ${bots.length}`} items={bots} />
+      <Group title={`成员 — ${users.length}`} items={users} roles={roles} onProfile={onProfile} />
+      <Group title={`Bot — ${bots.length}`} items={bots} roles={roles} onProfile={onProfile} />
     </aside>
   );
 }
 
-function Group({ title, items, roles }: { title: string; items: Member[]; roles?: MemberRoleControls }) {
+function Group({
+  title,
+  items,
+  roles,
+  onProfile,
+}: {
+  title: string;
+  items: Member[];
+  roles?: MemberRoleControls;
+  onProfile?: (member: Member) => void;
+}) {
   const [openId, setOpenId] = useState<string | null>(null);
+  /** 菜单项：查看资料（所有人）+ 设为/取消管理员（按 §3 权限） */
+  const actionsOf = (m: Member): RowAction[] => {
+    const out: RowAction[] = [];
+    if (onProfile) out.push({ id: "profile", text: "查看资料" });
+    const action = roles ? roleActionFor(roles.myRole, roles.myMemberId, m) : null;
+    if (action) out.push({ id: action, text: ROLE_ACTION_TEXT[action], danger: action === "demote" });
+    return out;
+  };
   if (items.length === 0) return null;
   return (
     <section className="mb-5">
@@ -78,7 +99,7 @@ function Group({ title, items, roles }: { title: string; items: Member[]; roles?
               data-member-id={m.id}
               title={`@${m.username}${m.type === "user" ? ` · ${roleLabel(m.role)}` : ""}`}
               onContextMenu={
-                action
+                actionsOf(m).length > 0
                   ? (e) => {
                       e.preventDefault();
                       setOpenId(m.id);
@@ -100,34 +121,14 @@ function Group({ title, items, roles }: { title: string; items: Member[]; roles?
                 <span className="rounded bg-brand-soft px-1 text-[10px] font-semibold text-brand-light">{roleLabel("admin")}</span>
               ) : null}
               {m.type === "bot" ? <BotBadge /> : null}
-              {action && roles ? (
-                // key=action：角色变化（乐观更新/推送）后换一个新的 Dropdown 实例，菜单项 id 保持稳定，
-                // 避免 React Aria 在菜单退出动画期间报 "Cannot change the id of an item"
-                <Dropdown key={action} isOpen={open} onOpenChange={(o) => setOpenId(o ? m.id : null)}>
-                  <Dropdown.Trigger
-                    aria-label={`${m.display_name} 的成员操作`}
-                    isDisabled={roles.pendingId === m.id}
-                    // 桌面端悬停/键盘聚焦才出现；触屏（无 hover 或粗指针）一直显示
-                    data-testid="member-actions"
-                    className={`ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded text-[#b5bac1] outline-none hover:bg-[#404249] hover:text-white focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-brand ${
-                      open
-                        ? "opacity-100"
-                        : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100 [@media(hover:none)]:opacity-100"
-                    }`}
-                  >
-                    ⋯
-                  </Dropdown.Trigger>
-                  {/* 贴着「⋯」向左弹出、与按钮垂直居中：菜单高度不超过一行，不压住上下相邻成员 */}
-                  <Dropdown.Popover placement="left" offset={6} className="min-w-36">
-                    <Dropdown.Menu className="p-1" aria-label={`${m.display_name} 的成员操作`} onAction={() => roles.onAction(m, action)}>
-                      <Dropdown.Item id="toggle-role" className="min-h-8" textValue={ROLE_ACTION_TEXT[action]} variant={action === "demote" ? "danger" : "default"}>
-                        {/* HeroUI 的 danger 变体只给 [data-slot=label] 上色，纯文本子节点会继承白字，所以必须包 Label */}
-                        <Label className={action === "demote" ? "text-danger" : undefined}>{ROLE_ACTION_TEXT[action]}</Label>
-                      </Dropdown.Item>
-                    </Dropdown.Menu>
-                  </Dropdown.Popover>
-                </Dropdown>
-              ) : null}
+              <RowActionsMenu
+                label={`${m.display_name} 的成员操作`}
+                actions={actionsOf(m)}
+                open={open}
+                onOpenChange={(o) => setOpenId(o ? m.id : null)}
+                disabled={roles?.pendingId === m.id}
+                onAction={(id) => (id === "profile" ? onProfile?.(m) : action && roles ? roles.onAction(m, action) : undefined)}
+              />
             </li>
           );
         })}

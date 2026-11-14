@@ -99,8 +99,33 @@ export interface Channel {
   team_id: ID;
   name: string;
   topic: string;
+  /** 默认频道（general）：不能删除（§5.1） */
+  is_default: boolean;
   created_by_member_id: ID;
   last_message_seq: number;
+  created_at: Timestamp;
+}
+
+/** PATCH /channels/{id}（§5.1）：owner/admin/创建者 */
+export interface UpdateChannelInput {
+  name?: string;
+  topic?: string;
+}
+
+/** Bot 对象（§8.1）；成员资料卡只用到 description 等公开字段 */
+export interface Bot {
+  id: ID;
+  member_id: ID;
+  team_id: ID;
+  name: string;
+  display_name: string;
+  description: string;
+  avatar_url: string | null;
+  avatar_source_url?: string | null;
+  avatar_shape: string | null;
+  avatar_color: string | null;
+  /** 非 owner/admin 读取时为 null */
+  webhook: unknown | null;
   created_at: Timestamp;
 }
 

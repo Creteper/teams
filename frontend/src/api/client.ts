@@ -5,6 +5,8 @@ import type {
   AttachmentUrlsResponse,
   UpdateMeInput,
   UpdateMemberRoleInput,
+  UpdateChannelInput,
+  Bot,
   AuthResponse,
   BotRunItem,
   UpdateTeamInput,
@@ -70,6 +72,17 @@ export interface TeamsApi {
   listChannels(token: string, teamId: ID): Promise<Page<Channel>>;
   /** POST /api/v1/teams/{team_id}/channels */
   createChannel(token: string, teamId: ID, input: CreateChannelInput): Promise<Channel>;
+
+  /** PATCH /api/v1/channels/{channel_id}（owner/admin/创建者）{name?, topic?} → Channel；推送 channel.updated */
+  updateChannel(token: string, channelId: ID, input: UpdateChannelInput): Promise<Channel>;
+  /** DELETE /api/v1/channels/{channel_id}（owner/admin；默认频道 403）→ 204；推送 channel.deleted {id} */
+  deleteChannel(token: string, channelId: ID): Promise<void>;
+  /** GET /api/v1/bots/{bot_id}（成员可读；资料卡取 description） */
+  getBot(token: string, botId: ID): Promise<Bot>;
+  /** PUT /api/v1/me/avatar（multipart 字段 file）→ User（§1、§10） */
+  uploadMyAvatar(token: string, file: Blob, filename: string): Promise<User>;
+  /** DELETE /api/v1/me/avatar → User */
+  deleteMyAvatar(token: string): Promise<User>;
 
   /** GET /api/v1/channels/{channel_id}/messages?limit&before|after（items 按 seq 升序） */
   listMessages(token: string, channelId: ID, query?: MessagePageQuery): Promise<Page<Message>>;

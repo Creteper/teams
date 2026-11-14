@@ -4,6 +4,8 @@ import { Button, Input } from "@heroui/react";
 import type { Channel, Team, User } from "../api/types";
 import { MemberAvatar } from "./MemberAvatar";
 import { GearIcon, MenuItem, PopMenu } from "./ui";
+import { RowActionsMenu } from "./RowActionsMenu";
+import { CHANNEL_ACTION_TEXT, channelActions, type ChannelAction } from "../lib/channels";
 
 /** 第二栏：team 名 + 下拉菜单、频道列表（可新建）、底部自己 + 齿轮菜单 */
 export function ChannelSidebar({
@@ -18,6 +20,8 @@ export function ChannelSidebar({
   onLeave,
   onLogout,
   onEditProfile,
+  myMemberId = "",
+  onChannelAction,
 }: {
   team: Team | null;
   channels: Channel[];
@@ -30,7 +34,11 @@ export function ChannelSidebar({
   onLeave(): void;
   onLogout(): void;
   onEditProfile(): void;
+  myMemberId?: string;
+  /** 频道菜单（改名 / 删除）；不传则不显示菜单 */
+  onChannelAction?: (channel: Channel, action: ChannelAction) => void;
 }) {
+  const [menuFor, setMenuFor] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -141,17 +149,42 @@ export function ChannelSidebar({
         <ul className="flex flex-col gap-0.5">
           {channels.map((c) => {
             const active = c.id === currentChannelId;
+            // 没有权限的项不出现；一项都没有就不显示「⋯」和右键菜单
+            const actions = onChannelAction ? channelActions(team?.my_role, myMemberId, c) : [];
+            const open = menuFor === c.id;
             return (
-              <li key={c.id}>
+              <li
+                key={c.id}
+                data-channel-id={c.id}
+                data-default={c.is_default ? "true" : undefined}
+                onContextMenu={
+                  actions.length > 0
+                    ? (e) => {
+                        e.preventDefault();
+                        setMenuFor(c.id);
+                      }
+                    : undefined
+                }
+                className={`group flex items-center rounded pr-1 ${
+                  active ? "bg-[#404249] text-white" : open ? "bg-[#35373c] text-[#dbdee1]" : "text-[#949ba4] hover:bg-[#35373c] hover:text-[#dbdee1]"
+                }`}
+              >
                 <Link
                   to={`/teams/${c.team_id}/channels/${c.id}`}
-                  className={`flex items-center gap-1.5 rounded px-2 py-1.5 text-[15px] ${
-                    active ? "bg-[#404249] text-white" : "text-[#949ba4] hover:bg-[#35373c] hover:text-[#dbdee1]"
-                  }`}
+                  aria-current={active ? "page" : undefined}
+                  className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-[15px] outline-none focus-visible:ring-2 focus-visible:ring-brand rounded"
                 >
                   <span className="text-xl leading-none text-[#80848e]">#</span>
                   <span className="truncate">{c.name}</span>
                 </Link>
+                <RowActionsMenu
+                  label={`频道 ${c.name} 的操作`}
+                  placement="right"
+                  actions={actions.map((a) => ({ id: a, text: CHANNEL_ACTION_TEXT[a], danger: a === "delete" }))}
+                  open={open}
+                  onOpenChange={(o) => setMenuFor(o ? c.id : null)}
+                  onAction={(id) => onChannelAction?.(c, id as ChannelAction)}
+                />
               </li>
             );
           })}
@@ -159,7 +192,15 @@ export function ChannelSidebar({
       </div>
 
       <div className="relative flex h-[52px] items-center gap-2 bg-[#232428] px-2">
-        <MemberAvatar member={me} size={32} />
+        <button
+          type="button"
+          aria-label="编辑头像和个人资料"
+          title="编辑头像和个人资料"
+          onClick={onEditProfile}
+          className="rounded-full outline-none focus-visible:ring-2 focus-visible:ring-brand"
+        >
+          <MemberAvatar member={me} size={32} />
+        </button>
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold text-[#f2f3f5]">{me.display_name}</div>
           <div className="truncate text-xs text-[#b5bac1]">@{me.username}</div>

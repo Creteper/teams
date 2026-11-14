@@ -16,6 +16,12 @@ interface AuthState {
   logout(): Promise<void>;
   /** PATCH /me：改显示名称 */
   updateProfile(displayName: string): Promise<void>;
+  /** PUT /me/avatar（multipart file）→ User */
+  uploadAvatar(file: Blob, filename: string): Promise<void>;
+  /** DELETE /me/avatar → User */
+  removeAvatar(): Promise<void>;
+  /** 收到自己的 member.updated（其他窗口改了昵称/头像）时同步本地 user */
+  syncUser(patch: Partial<Pick<User, "display_name" | "avatar_url">>): void;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -46,8 +52,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [token]);
 
+  // 只在“登录态”变化时连 / 断 WS；user 对象变化（改昵称、换头像）不重连
+  const authed = !!user;
   useEffect(() => {
-    if (!token || !user) return;
+    if (!token || !authed) return;
     realtime.connect(token);
     const off = realtime.onAuthFailed(() => {
       localStorage.removeItem(STORAGE_KEY);
@@ -58,7 +66,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       off();
       realtime.disconnect();
     };
-  }, [token, user]);
+  }, [token, authed]);
 
   const applySession = useCallback((t: string, u: User) => {
     localStorage.setItem(STORAGE_KEY, t);
@@ -82,6 +90,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       async updateProfile(displayName) {
         if (!token) return;
         setUser(await api.updateMe(token, { display_name: displayName }));
+      },
+      async uploadAvatar(file, filename) {
+        if (!token) return;
+        setUser(await api.uploadMyAvatar(token, file, filename));
+      },
+      async removeAvatar() {
+        if (!token) return;
+        setUser(await api.deleteMyAvatar(token));
+      },
+      syncUser(patch) {
+        setUser((prev) =>
+          prev && (patch.display_name ?? prev.display_name) === prev.display_name && (patch.avatar_url === undefined || patch.avatar_url === prev.avatar_url)
+            ? prev
+            : prev
+              ? { ...prev, ...patch }
+              : prev,
+        );
       },
       async logout() {
         if (token) await api.logout(token).catch(() => undefined);

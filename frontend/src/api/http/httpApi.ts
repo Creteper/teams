@@ -64,6 +64,16 @@ export function createHttpApi(): TeamsApi {
       request(`/teams/${encodeURIComponent(teamId)}/members`, { token, query: { limit: query.limit, cursor: query.cursor } }),
     addMember: (token, teamId, input) =>
       request(`/teams/${encodeURIComponent(teamId)}/members`, { method: "POST", token, body: input }),
+    updateChannel: (token, channelId, input) =>
+      request(`/channels/${encodeURIComponent(channelId)}`, { method: "PATCH", token, body: input }),
+    deleteChannel: (token, channelId) => request(`/channels/${encodeURIComponent(channelId)}`, { method: "DELETE", token }),
+    getBot: (token, botId) => request(`/bots/${encodeURIComponent(botId)}`, { token }),
+    uploadMyAvatar: (token, file, filename) => {
+      const fd = new FormData();
+      fd.append("file", file, filename);
+      return request("/me/avatar", { method: "PUT", token, body: fd });
+    },
+    deleteMyAvatar: (token) => request("/me/avatar", { method: "DELETE", token }),
     updateMemberRole: async (token, teamId, memberId, input) => {
       const res = await request<unknown>(`/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(memberId)}`, {
         method: "PATCH",

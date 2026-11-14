@@ -376,3 +376,64 @@ describe("mock：PATCH 成员角色（§3）", () => {
     });
   });
 });
+
+describe("mock：频道改名 / 删除（§5.1）", () => {
+  it("owner 改名：推送 channel.updated；同名 409；空名 400", async () => {
+    const { db, api } = setup();
+    const frames: ServerFrame[] = [];
+    db.listeners.add((f) => frames.push(f));
+    const { token } = await api.login({ username: "alice", password: "x" });
+    const c = await api.updateChannel(token, IDS.cFrontend, { name: "  web  " });
+    expect(c).toMatchObject({ id: IDS.cFrontend, name: "web", is_default: false });
+    expect(frames.at(-1)).toMatchObject({ type: "channel.updated", team_id: IDS.tDev, data: { id: IDS.cFrontend, name: "web" } });
+    await expect(api.updateChannel(token, IDS.cFrontend, { name: "GENERAL" })).rejects.toMatchObject({ status: 409 });
+    await expect(api.updateChannel(token, IDS.cFrontend, { name: " " })).rejects.toMatchObject({ status: 400, details: { field: "name" } });
+  });
+  it("普通成员只能改自己创建的频道；不能删除", async () => {
+    const { api } = setup();
+    const carol = (await api.login({ username: "carol", password: "x" })).token;
+    await expect(api.updateChannel(carol, IDS.cFrontend, { name: "x1" })).rejects.toMatchObject({ status: 403 });
+    const mine = await api.createChannel(carol, IDS.tDev, { name: "carol-room" });
+    expect((await api.updateChannel(carol, mine.id, { name: "carol-2" })).name).toBe("carol-2");
+    await expect(api.deleteChannel(carol, mine.id)).rejects.toMatchObject({ status: 403 });
+  });
+  it("owner 删除：推送 channel.deleted {id}；默认频道 403", async () => {
+    const { db, api } = setup();
+    const frames: ServerFrame[] = [];
+    db.listeners.add((f) => frames.push(f));
+    const { token } = await api.login({ username: "alice", password: "x" });
+    await api.deleteChannel(token, IDS.cRandom);
+    expect(frames.at(-1)).toMatchObject({ type: "channel.deleted", team_id: IDS.tDev, data: { id: IDS.cRandom } });
+    expect((await api.listChannels(token, IDS.tDev)).items.some((c) => c.id === IDS.cRandom)).toBe(false);
+    await expect(api.deleteChannel(token, IDS.cGeneral)).rejects.toMatchObject({ status: 403, code: "forbidden" });
+    expect((await api.listChannels(token, IDS.tDev)).items.find((c) => c.id === IDS.cGeneral)?.is_default).toBe(true);
+  });
+});
+
+describe("mock：bot 资料 / 我的头像", () => {
+  it("普通成员可读 bot 描述，webhook 为 null", async () => {
+    const { api } = setup();
+    const carol = (await api.login({ username: "carol", password: "x" })).token;
+    const bot = await api.getBot(carol, IDS.bHelper);
+    expect(bot).toMatchObject({ member_id: IDS.mHelper, name: "grok", webhook: null });
+    expect(bot.description).toContain("AI 助手");
+  });
+  it("PUT /me/avatar：嗅探类型、≤5MB；成功推 member.updated；DELETE 清空", async () => {
+    const { db, api } = setup();
+    const frames: ServerFrame[] = [];
+    db.listeners.add((f) => frames.push(f));
+    const { token, user } = await api.login({ username: "alice", password: "x" });
+    const png = new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3])], { type: "image/png" });
+    const u = await api.uploadMyAvatar(token, png, "avatar.png");
+    expect(u.avatar_url).toMatch(/^data:image\/png;base64,/);
+    const upd = frames.filter((f) => f.type === "member.updated");
+    expect(upd.length).toBeGreaterThanOrEqual(2); // alice 在两个 team
+    expect(upd.every((f) => f.type === "member.updated" && f.data.user_id === user.id && f.data.avatar_url === u.avatar_url)).toBe(true);
+    const svg = new Blob(["<svg/>"], { type: "image/png" });
+    await expect(api.uploadMyAvatar(token, svg, "x.png")).rejects.toMatchObject({ status: 415 });
+    const big = new Blob([new Uint8Array(5 * 1024 * 1024 + 1)]);
+    await expect(api.uploadMyAvatar(token, big, "x.png")).rejects.toMatchObject({ status: 413 });
+    expect((await api.deleteMyAvatar(token)).avatar_url).toBeNull();
+    expect((await api.listMembers(token, IDS.tDev)).items.find((m) => m.user_id === user.id)?.avatar_url).toBeNull();
+  });
+});

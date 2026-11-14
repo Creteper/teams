@@ -1,6 +1,7 @@
 import type { TeamsApi } from "../client";
 import { ApiError } from "../errors";
-import type { Attachment, AuthResponse, Invite, Member, Message, Page, Team, User } from "../types";
+import type { Attachment, AuthResponse, Bot, Channel, Invite, Member, Message, Page, Team, User } from "../types";
+import { AVATAR_MAX_BYTES, AVATAR_TYPES, sniffImage } from "../../lib/avatarCrop";
 import { inviteStatus } from "../../lib/invite";
 import { checkUpload } from "../../lib/upload";
 import { emit, nextId, nextSeq, senderOf, type MockDb, type TeamRecord } from "./db";
@@ -54,6 +55,15 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
     const me = myMember(user, teamId);
     if (!me) throw err(404, "not_found", "Team 不存在");
     return me;
+  }
+
+  function setMyAvatar(user: User, url: string | null): User {
+    user.avatar_url = url;
+    for (const m of db.members.filter((x) => x.user_id === user.id)) {
+      m.avatar_url = url;
+      emit(db, { type: "member.updated", team_id: m.team_id, data: { ...m } });
+    }
+    return { ...user };
   }
 
   function view(t: TeamRecord, me: Member): Team {
@@ -269,6 +279,7 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
         team_id: rec.id,
         name: "general",
         topic: "",
+        is_default: true,
         created_by_member_id: me.id,
         last_message_seq: 0,
         created_at: rec.created_at,
@@ -371,6 +382,88 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
       return next;
     },
 
+    // §5.1 PATCH /channels/{id}：owner/admin/创建者；name 1–64、team 内不区分大小写唯一（409）；topic ≤ 250
+    async updateChannel(token, channelId, input) {
+      await delay();
+      const channel = db.channels.get(channelId);
+      if (!channel) throw err(404, "not_found", "频道不存在");
+      const me = requireMember(authed(token), channel.team_id);
+      const allowed = me.role === "owner" || me.role === "admin" || channel.created_by_member_id === me.id;
+      if (!allowed) throw err(403, "forbidden", "只有所有者、管理员或频道创建者可以修改频道");
+      const next: Channel = { ...channel };
+      if (input.name !== undefined) {
+        const name = input.name.trim();
+        if ([...name].length < 1 || [...name].length > 64) throw err(400, "validation_failed", "频道名需 1–64 字符", { field: "name" });
+        const dup = [...db.channels.values()].some(
+          (c) => c.team_id === channel.team_id && c.id !== channelId && c.name.toLowerCase() === name.toLowerCase(),
+        );
+        if (dup) throw err(409, "conflict", "频道名已存在");
+        next.name = name;
+      }
+      if (input.topic !== undefined) {
+        if ([...input.topic].length > 250) throw err(400, "validation_failed", "频道主题最多 250 字符", { field: "topic" });
+        next.topic = input.topic;
+      }
+      db.channels.set(channelId, next);
+      emit(db, { type: "channel.updated", team_id: channel.team_id, data: next });
+      return next;
+    },
+
+    // §5.1 DELETE /channels/{id}：owner/admin；默认频道 403 → 204，推送 channel.deleted {id}
+    async deleteChannel(token, channelId) {
+      await delay();
+      const channel = db.channels.get(channelId);
+      if (!channel) throw err(404, "not_found", "频道不存在");
+      const me = requireMember(authed(token), channel.team_id);
+      if (me.role !== "owner" && me.role !== "admin") throw err(403, "forbidden", "只有所有者和管理员可以删除频道");
+      if (channel.is_default) throw err(403, "forbidden", "默认频道不能删除");
+      db.channels.delete(channelId);
+      db.messages = db.messages.filter((m) => m.channel_id !== channelId);
+      emit(db, { type: "channel.deleted", team_id: channel.team_id, data: { id: channelId } });
+    },
+
+    // §8.1 GET /bots/{id}：成员可读；非 owner/admin 的 webhook 为 null
+    async getBot(token, botId) {
+      await delay();
+      const user = authed(token);
+      const m = db.members.find((x) => x.type === "bot" && x.bot_id === botId);
+      if (!m) throw err(404, "not_found", "Bot 不存在");
+      requireMember(user, m.team_id);
+      const bot: Bot = {
+        id: botId,
+        member_id: m.id,
+        team_id: m.team_id,
+        name: m.username,
+        display_name: m.display_name,
+        description: db.botDescriptions.get(botId) ?? "",
+        avatar_url: m.avatar_url,
+        avatar_source_url: null,
+        avatar_shape: m.avatar_shape,
+        avatar_color: m.avatar_color,
+        webhook: null,
+        created_at: m.joined_at,
+      };
+      return bot;
+    },
+
+    // §10.1 PUT /me/avatar：只收 jpeg/png/gif/webp（嗅探），≤ 5 MB；→ User，向用户所在每个 team 推 member.updated
+    async uploadMyAvatar(token, file) {
+      await delay();
+      const user = authed(token);
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      if (bytes.length > AVATAR_MAX_BYTES) throw err(413, "payload_too_large", "头像不能超过 5 MB", { max_bytes: AVATAR_MAX_BYTES });
+      const type = sniffImage(bytes);
+      if (!type || !AVATAR_TYPES.includes(type)) throw err(415, "unsupported_media_type", "只支持 jpg、png、gif、webp", { detected: type ?? "unknown" });
+      let bin = "";
+      for (const b of bytes) bin += String.fromCharCode(b);
+      return setMyAvatar(user, `data:${type};base64,${btoa(bin)}`);
+    },
+
+    async deleteMyAvatar(token) {
+      await delay();
+      return setMyAvatar(authed(token), null);
+    },
+
     async listChannels(token, teamId) {
       await delay();
       requireMember(authed(token), teamId);
@@ -390,6 +483,7 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
         team_id: teamId,
         name,
         topic: input.topic ?? "",
+        is_default: false,
         created_by_member_id: me.id,
         last_message_seq: 0,
         created_at: new Date().toISOString(),

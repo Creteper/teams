@@ -30,6 +30,8 @@ export interface MockDb {
   invites: Invite[];
   /** 已配置 webhook 的 bot member_id（没配的 @ 后会 bot.run.failed(no_webhook)） */
   botsWithWebhook: Set<string>;
+  /** bot_id -> description（§8.1 Bot.description；资料卡展示） */
+  botDescriptions: Map<string, string>;
   botRuns: BotRunItem[];
   /** client_msg_id 幂等：`${member_id}:${client_msg_id}` -> message id */
   clientMsgIds: Map<string, string>;
@@ -287,6 +289,7 @@ export function createMockDb(): MockDb {
     team_id: teamId,
     name,
     topic,
+    is_default: name === "general",
     created_by_member_id: by,
     last_message_seq: 0,
     created_at: week,
@@ -433,6 +436,12 @@ export function createMockDb(): MockDb {
     ]),
     usedAttachments: new Set([img.id, video.id, broken.id]),
     botsWithWebhook: new Set([IDS.mHelper, IDS.mPlanner, IDS.mStar, IDS.mHelperOpen]),
+    botDescriptions: new Map([
+      [IDS.bHelper, "团队里的 AI 助手：@Grok 提问、总结讨论、写代码片段。"],
+      [IDS.bDeploy, "部署机器人：@DeployBot 部署 staging（未配置 webhook，演示失败提示）。"],
+      [IDS.bPlanner, "每周一同步排期和待办。"],
+      [IDS.bStar, ""],
+    ]),
     botRuns: [],
     listeners: new Set(),
     clientMsgIds: new Map(),
