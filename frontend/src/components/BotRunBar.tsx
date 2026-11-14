@@ -1,3 +1,4 @@
+import { CloseButton } from "@heroui/react";
 import type { Member } from "../api/types";
 import { botRunText, isConnecting, isDismissable, type BotRun } from "../lib/botRuns";
 import { MemberAvatar } from "./MemberAvatar";
@@ -66,9 +67,7 @@ export function BotRunBar({
             {bad || warn || declined ? <span aria-hidden="true">{bad ? "⚠" : warn ? "⏱" : "⊘"}</span> : dots}
             <span className="flex-1">{text}</span>
             {isDismissable(r) ? (
-              <button type="button" aria-label="关闭提示" className="text-base leading-none opacity-80 hover:opacity-100" onClick={() => onDismiss(r.key)}>
-                ×
-              </button>
+              <CloseButton aria-label="关闭提示" className="h-auto min-h-0 size-5 min-w-5 rounded bg-transparent hover:bg-transparent data-[hovered=true]:bg-transparent [&_svg]:size-3 text-current opacity-80 hover:opacity-100" onPress={() => onDismiss(r.key)} />
             ) : null}
           </div>
         );

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router";
-import { Button, Input, TextArea } from "@heroui/react";
+import { Button, Input, Tabs, TextArea } from "@heroui/react";
 import { api } from "../api";
 import type { Team } from "../api/types";
 import { TEAM_DESC_MAX, TEAM_NAME_MAX, charCount, parseInviteInput, validateTeamFields } from "../lib/text";
@@ -98,21 +98,28 @@ export function TeamDialog({ token, onClose, onDone }: { token: string; onClose(
   const [tab, setTab] = useState<"create" | "join">("create");
   return (
     <DialogShell label="创建或加入 Team" title="创建或加入 Team" onClose={onClose}>
-      <div className="mb-5 flex gap-1 rounded-lg bg-[#1e1f22] p-1" role="tablist">
-        {(["create", "join"] as const).map((t) => (
-          <button
-            key={t}
-            type="button"
-            role="tab"
-            aria-selected={tab === t}
-            onClick={() => setTab(t)}
-            className={`flex-1 rounded-md py-1.5 text-sm font-medium ${tab === t ? "bg-brand text-white" : "text-[#b5bac1] hover:text-white"}`}
-          >
-            {t === "create" ? "创建 Team" : "通过邀请加入"}
-          </button>
-        ))}
-      </div>
-      {tab === "create" ? <CreateTeamForm token={token} onDone={onDone} /> : <JoinByInviteForm onGo={onClose} />}
+      <Tabs selectedKey={tab} onSelectionChange={(k) => setTab(k as "create" | "join")} className="gap-0">
+        <Tabs.ListContainer className="mb-5 rounded-lg bg-[#1e1f22] p-1">
+          <Tabs.List aria-label="创建或加入 Team" className="w-full gap-1 bg-transparent p-0">
+            {(["create", "join"] as const).map((t) => (
+              <Tabs.Tab
+                key={t}
+                id={t}
+                className="h-auto flex-1 rounded-md py-1.5 text-sm font-medium text-[#b5bac1] hover:text-white data-[selected=true]:text-white"
+              >
+                {t === "create" ? "创建 Team" : "通过邀请加入"}
+                <Tabs.Indicator className="rounded-md bg-brand shadow-none" />
+              </Tabs.Tab>
+            ))}
+          </Tabs.List>
+        </Tabs.ListContainer>
+        <Tabs.Panel id="create" className="p-0">
+          <CreateTeamForm token={token} onDone={onDone} />
+        </Tabs.Panel>
+        <Tabs.Panel id="join" className="p-0">
+          <JoinByInviteForm onGo={onClose} />
+        </Tabs.Panel>
+      </Tabs>
     </DialogShell>
   );
 }

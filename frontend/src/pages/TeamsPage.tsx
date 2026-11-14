@@ -1,3 +1,4 @@
+import { Button } from "@heroui/react";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { useAuth, useToken } from "../auth/AuthContext";
@@ -33,9 +34,14 @@ export default function TeamsPage() {
               <span className="h-6 w-px bg-white/10" />
               <h1 className="text-xl font-bold text-white">你好，{user?.display_name}</h1>
             </div>
-            <button type="button" onClick={() => setConfirmLogout(true)} className="rounded px-2 py-1 text-sm text-[#b5bac1] hover:bg-white/5 hover:text-white">
+            <Button
+              variant="ghost"
+              size="sm"
+              onPress={() => setConfirmLogout(true)}
+              className="h-auto min-h-0 rounded px-2 py-1 text-sm font-normal text-[#b5bac1] hover:bg-white/5 hover:text-white data-[hovered=true]:bg-white/5"
+            >
               退出登录
-            </button>
+            </Button>
           </div>
           <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-[#949ba4]">我的 Team — {teams.length}</h2>
           {!loading && teams.length === 0 ? (

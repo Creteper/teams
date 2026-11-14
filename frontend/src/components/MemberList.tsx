@@ -1,3 +1,4 @@
+import { Button, CloseButton } from "@heroui/react";
 import { useState } from "react";
 import type { Member } from "../api/types";
 import { roleLabel } from "../lib/roles";
@@ -41,20 +42,19 @@ export function MemberList({
   return (
     <aside aria-label="成员列表" className="hidden w-60 shrink-0 overflow-y-auto bg-[#2b2d31] px-2 py-4 lg:block">
       {onInvite ? (
-        <button
-          type="button"
-          onClick={onInvite}
-          className="mb-4 w-full rounded px-2 py-1.5 text-left text-sm text-brand-light hover:bg-[#35373c] hover:text-white"
+        <Button
+          variant="ghost"
+          fullWidth
+          onPress={onInvite}
+          className="mb-4 h-auto min-h-0 justify-start rounded px-2 py-1.5 text-left text-sm font-normal text-brand-light hover:bg-[#35373c] hover:text-white data-[hovered=true]:bg-[#35373c] data-[pressed=true]:scale-100"
         >
           ＋ 邀请成员
-        </button>
+        </Button>
       ) : null}
       {notice ? (
         <div role="alert" className="mb-3 flex items-start gap-2 rounded-md bg-[#f23f43]/15 px-2.5 py-2 text-xs text-[#ff8a8c]">
           <span className="flex-1">{notice}</span>
-          <button type="button" aria-label="关闭提示" className="text-[#ff8a8c] hover:text-white" onClick={onDismissNotice}>
-            ✕
-          </button>
+          <CloseButton aria-label="关闭提示" className="h-auto min-h-0 size-5 min-w-5 rounded bg-transparent hover:bg-transparent data-[hovered=true]:bg-transparent [&_svg]:size-3 text-[#ff8a8c] hover:text-white" onPress={onDismissNotice} />
         </div>
       ) : null}
       <Group title={`成员 — ${users.length}`} items={users} roles={roles} onProfile={onProfile} />

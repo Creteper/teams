@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type WheelEvent } from "react";
-import { Button } from "@heroui/react";
+import { Button, Slider } from "@heroui/react";
 import {
   AVATAR_MAX_BYTES,
   MAX_ZOOM,
@@ -195,21 +195,25 @@ export function AvatarCropDialog({
             {/* 圆形示意：外面压暗（上传的是整个正方形） */}
             <div className="pointer-events-none absolute inset-0 rounded-full shadow-[0_0_0_9999px_rgba(0,0,0,0.55)] ring-2 ring-white/70" />
           </div>
-          <label className="flex w-full items-center gap-2 text-xs text-[#b5bac1]">
-            <span>缩放</span>
-            <input
-              type="range"
+          <div className="flex w-full items-center gap-2 text-xs text-[#b5bac1]">
+            <span aria-hidden="true">缩放</span>
+            <Slider
               aria-label="缩放"
-              min={1}
-              max={MAX_ZOOM}
+              minValue={1}
+              maxValue={MAX_ZOOM}
               step={0.01}
               value={crop?.zoom ?? 1}
-              disabled={!img}
-              onChange={(e) => img && crop && setCrop(zoomAt(crop, Number(e.target.value), VIEW / 2, VIEW / 2, img.naturalWidth, img.naturalHeight, VIEW))}
-              className="flex-1 accent-[#6d5cf6]"
-            />
+              isDisabled={!img}
+              onChange={(v) => img && crop && setCrop(zoomAt(crop, Number(Array.isArray(v) ? v[0] : v), VIEW / 2, VIEW / 2, img.naturalWidth, img.naturalHeight, VIEW))}
+              className="flex-1 [--slider-fill:var(--color-brand)]"
+            >
+              <Slider.Track className="h-1.5 rounded-full bg-[#1e1f22]">
+                <Slider.Fill className="rounded-full bg-brand" />
+                <Slider.Thumb className="size-4" />
+              </Slider.Track>
+            </Slider>
             <span className="w-10 text-right tabular-nums">{(crop?.zoom ?? 1).toFixed(1)}×</span>
-          </label>
+          </div>
         </div>
         <div className="flex flex-1 flex-col gap-3">
           <div className="text-sm font-semibold text-[#f2f3f5]">预览</div>

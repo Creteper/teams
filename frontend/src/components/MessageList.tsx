@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Button, Modal, Spinner } from "@heroui/react";
 import type { Attachment, Channel, Member, Message, MessageSender } from "../api/types";
 import { parseContent } from "../lib/mention";
 import { attachDeclines, formatTime, groupMessages, isDeclined } from "../lib/messages";
@@ -285,22 +286,19 @@ export function MessageList({
                 {ob ? (
                   ob.status === "sending" ? (
                     <p className="flex items-center gap-1.5 text-xs text-[#949ba4]" data-testid="sending-indicator">
-                      <span
-                        aria-hidden="true"
-                        className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-[#949ba4]/30 border-t-[#b5bac1] motion-reduce:animate-none"
-                      />
+                      <Spinner size="sm" aria-hidden="true" className="size-3 text-[#b5bac1] [--spinner-size:0.75rem]" />
                       <span>发送中…</span>
                     </p>
                   ) : (
                     <p className="flex flex-wrap items-center gap-2 text-xs text-[#f23f43]" role="alert">
                       <span aria-hidden="true">⚠</span>
                       <span>发送失败{ob.error ? `：${ob.error}` : ""}</span>
-                      <button type="button" className="font-semibold text-brand-light hover:underline" onClick={() => onRetrySend?.(ob.local_id)}>
+                      <Button variant="ghost" size="sm" className={`${TEXT_BUTTON} text-brand-light`} onPress={() => onRetrySend?.(ob.local_id)}>
                         重试
-                      </button>
-                      <button type="button" className="font-semibold text-[#b5bac1] hover:underline" onClick={() => onDiscard?.(ob.local_id)}>
+                      </Button>
+                      <Button variant="ghost" size="sm" className={`${TEXT_BUTTON} text-[#b5bac1]`} onPress={() => onDiscard?.(ob.local_id)}>
                         删除
-                      </button>
+                      </Button>
                     </p>
                   )
                 ) : null}
@@ -335,9 +333,9 @@ export function MessageList({
           {loadingOlder ? (
             "加载更早的消息…"
           ) : (
-            <button type="button" className="hover:underline" onClick={() => onLoadOlder?.()}>
+            <Button variant="ghost" size="sm" className={`${TEXT_BUTTON} font-normal text-[#949ba4]`} onPress={() => onLoadOlder?.()}>
               加载更早的消息
-            </button>
+            </Button>
           )}
         </div>
       ) : (
@@ -347,18 +345,24 @@ export function MessageList({
       </div>
 
       {preview ? (
-        <div
-          role="dialog"
-          aria-label="图片预览"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-8"
-          onClick={() => setPreview(null)}
-        >
-          <img src={preview.url} alt={preview.file_name} className="max-h-full max-w-full rounded" />
-        </div>
+        // HeroUI Modal：点任意处 / Esc 关闭
+        <Modal.Backdrop isOpen onOpenChange={(o) => !o && setPreview(null)} className="z-50 bg-black/80">
+          <Modal.Container placement="center" className="h-full w-full p-8 sm:w-full sm:p-8">
+            <Modal.Dialog aria-label="图片预览" className="h-full max-w-none rounded-none bg-transparent p-0 shadow-none">
+              <div className="flex h-full w-full items-center justify-center" onClick={() => setPreview(null)}>
+                <img src={preview.url} alt={preview.file_name} className="max-h-full max-w-full rounded" />
+              </div>
+            </Modal.Dialog>
+          </Modal.Container>
+        </Modal.Backdrop>
       ) : null}
     </div>
   );
 }
+
+/** 行内文字按钮（重试 / 删除 / 加载更早）：HeroUI Button 去掉高度、内边距和底色，看起来和原来的文字链接一样 */
+const TEXT_BUTTON =
+  "h-auto min-h-0 min-w-0 rounded-none bg-transparent p-0 text-xs font-semibold hover:bg-transparent hover:underline data-[hovered=true]:bg-transparent data-[pressed=true]:scale-100";
 
 const NO_KEYS: Record<string, string> = {};
 
@@ -450,25 +454,31 @@ function AttachmentView({
           {a.kind === "image" ? "🖼" : "🎞"}
         </span>
         <span>{a.kind === "image" ? "图片" : "视频"}加载失败</span>
-        <button
-          type="button"
-          className="rounded bg-brand px-3 py-1 text-xs font-semibold text-white hover:bg-brand-hover"
-          onClick={() => {
+        <Button
+          variant="primary"
+          size="sm"
+          className="h-auto min-h-0 rounded bg-brand px-3 py-1 text-xs font-semibold text-white hover:bg-brand-hover"
+          onPress={() => {
             setFailed(false);
             setNonce((n) => n + 1);
             onRetry();
           }}
         >
           重试
-        </button>
+        </Button>
       </div>
     );
   }
   if (a.kind === "image") {
     return (
-      <button type="button" onClick={() => onPreview(a)} className="overflow-hidden rounded-lg" title="点击预览">
-        <img key={nonce} src={a.url} alt={a.file_name} onLoad={onMediaLoad} onError={onError} style={mediaBox(a)} className="object-cover" />
-      </button>
+      <Button
+        variant="ghost"
+        aria-label={`预览 ${a.file_name}`}
+        onPress={() => onPreview(a)}
+        className="block h-auto min-h-0 min-w-0 overflow-hidden rounded-lg bg-transparent p-0 hover:bg-transparent data-[hovered=true]:bg-transparent data-[pressed=true]:scale-100"
+      >
+        <img key={nonce} src={a.url} alt={a.file_name} title="点击预览" onLoad={onMediaLoad} onError={onError} style={mediaBox(a)} className="object-cover" />
+      </Button>
     );
   }
   return (

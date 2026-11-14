@@ -1,3 +1,4 @@
+import { Button, CloseButton, ProgressBar, TextArea } from "@heroui/react";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Attachment, Member } from "../api/types";
 import type { UploadOptions } from "../api/client";
@@ -216,19 +217,16 @@ export function Composer({
               ) : (
                 <video src={previewsRef.current[a.id] ?? a.url} className="h-20 w-28 rounded bg-black object-cover" muted />
               )}
-              <button
-                type="button"
+              <CloseButton
                 aria-label={`移除 ${a.file_name}`}
-                onClick={() => {
+                onPress={() => {
                   const u = previewsRef.current[a.id];
                   if (u) URL.revokeObjectURL(u);
                   delete previewsRef.current[a.id];
                   setAttachments((prev) => prev.filter((x) => x.id !== a.id));
                 }}
-                className="absolute -right-2 -top-2 h-5 w-5 rounded-full bg-[#f23f43] text-xs text-white"
-              >
-                ×
-              </button>
+                className="absolute -top-2 -right-2 size-5 min-w-5 rounded-full bg-[#f23f43] text-white hover:bg-[#d83c3e] data-[hovered=true]:bg-[#d83c3e] [&_svg]:size-3"
+              />
             </div>
           ))}
           {uploads.map((u) => (
@@ -239,19 +237,20 @@ export function Composer({
               <div>
                 <div className="mb-1 flex justify-between text-[11px] text-[#949ba4]">
                   <span>上传中 {Math.round(u.progress * 100)}%</span>
-                  <button type="button" className="text-[#f23f43] hover:underline" onClick={() => u.controller.abort()}>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-auto min-h-0 min-w-0 rounded-none bg-transparent p-0 text-[11px] font-normal text-[#f23f43] hover:bg-transparent hover:underline data-[hovered=true]:bg-transparent data-[pressed=true]:scale-100"
+                    onPress={() => u.controller.abort()}
+                  >
                     取消
-                  </button>
+                  </Button>
                 </div>
-                <div
-                  className="h-1.5 overflow-hidden rounded bg-[#1e1f22]"
-                  role="progressbar"
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={Math.round(u.progress * 100)}
-                >
-                  <div className="h-full bg-brand transition-[width]" style={{ width: `${u.progress * 100}%` }} />
-                </div>
+                <ProgressBar aria-label={`${u.name} 上传进度`} value={Math.round(u.progress * 100)} className="gap-0 [--progress-bar-fill:var(--color-brand)]">
+                  <ProgressBar.Track className="h-1.5 rounded bg-[#1e1f22]">
+                    <ProgressBar.Fill className="rounded-none" />
+                  </ProgressBar.Track>
+                </ProgressBar>
               </div>
             </div>
           ))}
@@ -259,17 +258,16 @@ export function Composer({
       ) : null}
 
       <div className={`flex items-end gap-2 bg-[#383a40] px-3 py-2 ${hasTray ? "rounded-b-lg" : "rounded-lg"}`}>
-        <button
-          type="button"
+        <Button
+          isIconOnly
           aria-label="上传图片或视频"
-          title="上传图片或视频"
-          onClick={() => fileRef.current?.click()}
-          className="mb-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#b5bac1] text-lg font-bold leading-none text-[#383a40] hover:bg-white"
+          onPress={() => fileRef.current?.click()}
+          className="mb-0.5 size-6 min-w-6 shrink-0 rounded-full bg-[#b5bac1] text-lg leading-none font-bold text-[#383a40] hover:bg-white data-[hovered=true]:bg-white"
         >
           +
-        </button>
+        </Button>
         <input ref={fileRef} type="file" accept={ACCEPT_ATTR} multiple hidden onChange={(e) => onFiles(e.target.files)} />
-        <textarea
+        <TextArea
           ref={textareaRef}
           rows={1}
           value={text}
@@ -283,7 +281,7 @@ export function Composer({
           }}
           onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
           onKeyDown={onKeyDown}
-          className="max-h-48 min-h-[24px] flex-1 resize-none bg-transparent py-0.5 text-[15px] text-[#dbdee1] placeholder:text-[#6d6f78] focus:outline-none"
+          className="max-h-48 min-h-[24px] flex-1 resize-none rounded-none border-0 bg-transparent px-0 py-0.5 text-[15px] text-[#dbdee1] shadow-none outline-none placeholder:text-[#6d6f78] hover:bg-transparent focus:bg-transparent focus:shadow-none focus:ring-0 focus:outline-none data-[focused=true]:bg-transparent data-[focused=true]:shadow-none data-[hovered=true]:bg-transparent sm:text-[15px]"
         />
       </div>
       {error ? (

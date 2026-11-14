@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams, useSearchParams } from "react-router";
-import { Spinner } from "@heroui/react";
+import { CloseButton, Spinner } from "@heroui/react";
 import { api, fetchAllMembers, realtime } from "../api";
 import type { Channel, Member, Message, Team } from "../api/types";
 import { useAuth, useToken } from "../auth/AuthContext";
@@ -522,9 +522,7 @@ export default function TeamPage() {
         {channelNotice ? (
           <div role="status" className="flex items-center gap-2 bg-[#f0b232]/15 px-4 py-2 text-sm text-[#f0b232]">
             <span className="flex-1">{channelNotice}</span>
-            <button type="button" aria-label="关闭提示" onClick={() => setChannelNotice(null)} className="hover:text-white">
-              ✕
-            </button>
+            <CloseButton aria-label="关闭提示" onPress={() => setChannelNotice(null)} className="h-auto min-h-0 size-5 min-w-5 rounded bg-transparent hover:bg-transparent data-[hovered=true]:bg-transparent [&_svg]:size-3 text-current hover:text-white" />
           </div>
         ) : null}
         {loading ? (

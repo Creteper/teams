@@ -104,3 +104,36 @@ describe("未读与置顶", () => {
     expect(screen.queryByTestId("pinned-heading")).toBeNull();
   });
 });
+
+describe("team 菜单 / 用户菜单（HeroUI Dropdown）", () => {
+  afterEach(cleanup);
+  it("owner：邀请成员、Team 设置可点；退出 Team 禁用、红字，并说明原因", async () => {
+    setup("owner", "me");
+    fireEvent.click(screen.getByRole("button", { name: "T 菜单" }));
+    const items = await screen.findAllByRole("menuitem");
+    expect(items.map((i) => i.textContent)).toEqual(["邀请成员＋", "Team 设置⚙", "退出 Team你是所有者，不能退出 team。"]);
+    expect(items[2].getAttribute("aria-disabled")).toBe("true");
+    expect(items[2].className).toContain("menu-item--danger");
+  });
+  it("member：只有退出 Team，可点并回调", async () => {
+    const onLeave = vi.fn();
+    render(
+      <MemoryRouter>
+        <ChannelSidebar team={team("member")} channels={channels} me={me} canManage={false} onCreateChannel={async () => {}} onInvite={() => {}} onSettings={() => {}} onLeave={onLeave} onLogout={() => {}} onEditProfile={() => {}} />
+      </MemoryRouter>,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "T 菜单" }));
+    const items = await screen.findAllByRole("menuitem");
+    expect(items.map((i) => i.textContent)).toEqual(["退出 Team"]);
+    fireEvent.click(items[0]);
+    await waitFor(() => expect(onLeave).toHaveBeenCalled());
+  });
+  it("用户菜单：显示登录名，编辑个人资料 / 退出登录（红字）", async () => {
+    setup("member", "me");
+    fireEvent.click(screen.getByRole("button", { name: "用户设置" }));
+    expect(await screen.findByText("已登录为 @me")).toBeTruthy();
+    const items = await screen.findAllByRole("menuitem");
+    expect(items.map((i) => i.textContent)).toEqual(["编辑个人资料", "退出登录"]);
+    expect(items[1].className).toContain("menu-item--danger");
+  });
+});

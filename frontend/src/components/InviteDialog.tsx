@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button, Input, Label, ListBox, Select, type Key } from "@heroui/react";
-import { ConfirmDialog, useEscapeClose } from "./ui";
+import { ConfirmDialog, DialogShell } from "./ui";
 import { api } from "../api";
 import type { Invite, Member, Team } from "../api/types";
 import {
@@ -176,27 +176,9 @@ export function InviteDialog({
 
   const link = created ? inviteUrl(created, origin) : "";
 
-  // Esc 关闭（下拉框打开时先收起下拉框；作废确认框在上层时只关确认框）
-  useEscapeClose(onClose);
-
+  // HeroUI Modal（DialogShell）：Esc 只关最上层（下拉框打开时先收起下拉框；作废确认框在上层时只关确认框）
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="邀请成员"
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-6"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="max-h-full w-full max-w-xl overflow-y-auto rounded-xl bg-[#313338] p-6 text-[#dbdee1] shadow-2xl">
-        <div className="mb-4 flex items-center justify-between">
-          <h2 className="text-xl font-bold text-white">邀请成员加入 {team.name}</h2>
-          <button type="button" aria-label="关闭" onClick={onClose} className="text-2xl text-[#b5bac1] hover:text-white">
-            ×
-          </button>
-        </div>
-
+    <DialogShell label="邀请成员" title={`邀请成员加入 ${team.name}`} onClose={onClose} width="max-w-xl">
         <section className="mb-6">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#949ba4]">生成邀请链接</h3>
           <div className="grid grid-cols-2 gap-3">
@@ -211,13 +193,13 @@ export function InviteDialog({
           {created ? (
             <div className="mt-3 rounded-md bg-[#1e1f22] p-3">
               <div className="flex gap-2">
-                <input
+                <Input
                   ref={linkRef}
                   readOnly
                   value={link}
                   aria-label="邀请链接"
                   onFocus={(e) => e.currentTarget.select()}
-                  className="min-w-0 flex-1 bg-transparent font-mono text-sm text-[#f2f3f5] outline-none"
+                  className="h-auto min-h-0 min-w-0 flex-1 rounded-none border-0 bg-transparent p-0 font-mono text-sm text-[#f2f3f5] shadow-none outline-none hover:bg-transparent focus:bg-transparent focus:shadow-none focus:ring-0 data-[focused=true]:bg-transparent data-[focused=true]:shadow-none data-[hovered=true]:bg-transparent sm:text-sm"
                 />
                 <Button size="sm" variant="secondary" onPress={() => void copy(link)}>
                   复制
@@ -300,7 +282,6 @@ export function InviteDialog({
             onCancel={() => setConfirmRevoke(null)}
           />
         ) : null}
-      </div>
-    </div>
+    </DialogShell>
   );
 }

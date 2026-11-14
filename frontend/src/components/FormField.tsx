@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { Input, Label, TextField } from "@heroui/react";
+import { Input, Label, TextField, ToggleButton } from "@heroui/react";
 import { EyeIcon } from "./ui";
 
 /** 表单字段：标签 + 输入 + 说明，统一间距；invalid 时用 HeroUI TextField 的 invalid 状态给输入框标红 */
@@ -53,15 +53,15 @@ export function PasswordInput({
         onChange={(e) => onChange(e.target.value)}
         className="w-full pr-10"
       />
-      <button
-        type="button"
+      <ToggleButton
+        isIconOnly
         aria-label={show ? "隐藏密码" : "显示密码"}
-        aria-pressed={show}
-        onClick={() => setShow((v) => !v)}
-        className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded text-[#949ba4] hover:text-white"
+        isSelected={show}
+        onChange={setShow}
+        className="absolute top-1/2 right-2 size-7 min-w-7 -translate-y-1/2 rounded bg-transparent text-[#949ba4] hover:bg-transparent hover:text-white data-[hovered=true]:bg-transparent data-[selected=true]:bg-transparent data-[selected=true]:text-[#949ba4] data-[pressed=true]:scale-100"
       >
         <EyeIcon off={show} />
-      </button>
+      </ToggleButton>
     </div>
   );
 }

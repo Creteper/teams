@@ -1,33 +1,11 @@
-import { useEffect, useRef, type ReactNode } from "react";
-import { Button } from "@heroui/react";
+import type { ReactElement, ReactNode } from "react";
+import { AlertDialog, Button, Modal, Tooltip } from "@heroui/react";
 
 /**
- * Esc 关闭弹窗：只关最上层（嵌套确认框时不连带关闭外层）；
- * 下拉框（Select / ListBox 弹层）打开时 Esc 先交给它收起。
+ * 通用弹窗外壳（HeroUI Modal）：点遮罩 / Esc 关闭（Esc 只关最上层；下拉框打开时 Esc 先收起下拉框，
+ * 都由 React Aria 的 overlay 栈处理），焦点锁在弹窗内、关闭后还给打开它的元素。
+ * 视觉沿用原来的 Discord 深色：#313338 圆角 12px 卡片、70% 黑遮罩、右上角 ×。
  */
-const escStack: { current: () => void }[] = [];
-export function useEscapeClose(onClose: () => void) {
-  const ref = useRef(onClose);
-  ref.current = onClose;
-  useEffect(() => {
-    const entry = { current: () => ref.current() };
-    escStack.push(entry);
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || e.defaultPrevented) return;
-      if (escStack[escStack.length - 1] !== entry) return;
-      if (document.querySelector("[data-teams-popover-open], .select__popover, [role=listbox][data-open]")) return;
-      entry.current();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      const i = escStack.indexOf(entry);
-      if (i >= 0) escStack.splice(i, 1);
-    };
-  }, []);
-}
-
-/** 通用弹窗外壳（点遮罩 / Esc 关闭） */
 export function DialogShell({
   label,
   title,
@@ -41,31 +19,32 @@ export function DialogShell({
   children: ReactNode;
   width?: string;
 }) {
-  useEscapeClose(onClose);
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={label}
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-6"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+    <Modal.Backdrop
+      isOpen
+      onOpenChange={(open) => {
+        if (!open) onClose();
       }}
+      className="z-40 bg-black/70"
     >
-      <div className={`max-h-full w-full ${width} overflow-y-auto rounded-xl bg-[#313338] p-6 text-[#dbdee1] shadow-2xl`}>
-        <div className="mb-4 flex items-center justify-between gap-4">
-          <h2 className="text-xl font-bold text-white">{title}</h2>
-          <button type="button" aria-label="关闭" onClick={onClose} className="text-2xl leading-none text-[#b5bac1] hover:text-white">
-            ×
-          </button>
-        </div>
-        {children}
-      </div>
-    </div>
+      <Modal.Container placement="center" scroll="inside" className="w-full p-6 sm:w-full sm:p-6">
+        <Modal.Dialog aria-label={label} className={`${width} rounded-xl bg-[#313338] p-6 text-[#dbdee1] shadow-2xl`}>
+          <Modal.Header className="mb-4 flex-row items-center justify-between gap-4">
+            <Modal.Heading className="text-xl font-bold text-white">{title}</Modal.Heading>
+          </Modal.Header>
+          <Modal.CloseTrigger aria-label="关闭" className={CLOSE_BUTTON_CLASS} />
+          <Modal.Body className="m-0 mt-0 p-0 text-base leading-normal text-inherit">{children}</Modal.Body>
+        </Modal.Dialog>
+      </Modal.Container>
+    </Modal.Backdrop>
   );
 }
 
-/** 二次确认 */
+/** 弹窗右上角 ×：HeroUI CloseButton 去掉底色，灰色、悬停变白（和原来一致） */
+export const CLOSE_BUTTON_CLASS =
+  "absolute right-5 top-6 h-7 w-7 min-w-7 rounded bg-transparent text-[#b5bac1] hover:bg-transparent hover:text-white data-[hovered=true]:bg-transparent [&_svg]:size-5";
+
+/** 二次确认（HeroUI AlertDialog） */
 export function ConfirmDialog({
   title,
   message,
@@ -86,100 +65,75 @@ export function ConfirmDialog({
   onCancel(): void;
 }) {
   return (
-    <DialogShell label={title} title={title} onClose={onCancel} width="max-w-md">
-      <div className="text-sm leading-relaxed text-[#b5bac1]">{message}</div>
-      {error ? <p className="mt-3 text-sm text-[#f23f43]">{error}</p> : null}
-      <div className="mt-6 flex justify-end gap-2">
-        <Button variant="ghost" onPress={onCancel}>
-          取消
-        </Button>
-        <Button variant={danger ? "danger" : "primary"} isPending={pending} onPress={onConfirm}>
-          {confirmText}
-        </Button>
-      </div>
-    </DialogShell>
+    <AlertDialog.Backdrop
+      isOpen
+      // AlertDialog 默认不允许点遮罩 / Esc 关闭；这里保持原来的行为：两者都等于「取消」
+      isDismissable
+      isKeyboardDismissDisabled={false}
+      onOpenChange={(open) => {
+        if (!open) onCancel();
+      }}
+      className="z-40 bg-black/70"
+    >
+      <AlertDialog.Container placement="center" className="w-full p-6 sm:w-full sm:p-6">
+        <AlertDialog.Dialog aria-label={title} className="max-w-md rounded-xl bg-[#313338] p-6 text-[#dbdee1] shadow-2xl">
+          <AlertDialog.Header className="mb-4 flex-row items-center justify-between gap-4">
+            <AlertDialog.Heading className="text-xl font-bold text-white">{title}</AlertDialog.Heading>
+          </AlertDialog.Header>
+          <AlertDialog.CloseTrigger aria-label="关闭" className={CLOSE_BUTTON_CLASS} />
+          <AlertDialog.Body className="m-0 mt-0 p-0 text-sm leading-relaxed text-[#b5bac1]">
+            {message}
+            {error ? <p className="mt-3 text-sm text-[#f23f43]">{error}</p> : null}
+          </AlertDialog.Body>
+          <AlertDialog.Footer className="mt-6 flex justify-end gap-2">
+            <Button variant="ghost" onPress={onCancel}>
+              取消
+            </Button>
+            <Button variant={danger ? "danger" : "primary"} isPending={pending} onPress={onConfirm}>
+              {confirmText}
+            </Button>
+          </AlertDialog.Footer>
+        </AlertDialog.Dialog>
+      </AlertDialog.Container>
+    </AlertDialog.Backdrop>
   );
 }
 
-/** 弹出菜单：点外部 / Esc 关闭 */
-export function PopMenu({
-  open,
-  onClose,
-  className,
+/**
+ * 悬停 / 键盘聚焦时的提示（右侧气泡，HeroUI Tooltip），用于 team 图标栏。
+ * 触发元素就是图标本身（render 回调里拿到 trigger props 交给 Link / Button），不额外包一层可聚焦的 div。
+ */
+export function RailTooltip({
+  text,
   children,
-  label,
 }: {
-  open: boolean;
-  onClose(): void;
-  className: string;
-  children: ReactNode;
-  label: string;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    // 延迟注册，避免打开菜单的那次点击立刻关闭它
-    const t = setTimeout(() => document.addEventListener("mousedown", onDown));
-    window.addEventListener("keydown", onKey);
-    return () => {
-      clearTimeout(t);
-      document.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open, onClose]);
-  if (!open) return null;
-  return (
-    <div ref={ref} role="menu" aria-label={label} className={`z-30 rounded-md bg-[#111214] p-1.5 shadow-xl ring-1 ring-black/50 ${className}`}>
-      {children}
-    </div>
-  );
-}
-
-export function MenuItem({
-  children,
-  onSelect,
-  danger,
-  disabled,
-  hint,
-}: {
-  children: ReactNode;
-  onSelect?(): void;
-  danger?: boolean;
-  disabled?: boolean;
-  hint?: string;
+  text: string;
+  /** 函数：拿 trigger props 渲染 Link 等普通元素；ReactElement：HeroUI Button（自己接入 Tooltip 的触发上下文） */
+  children: ((triggerProps: Record<string, unknown>) => ReactElement) | ReactElement;
 }) {
   return (
-    <button
-      type="button"
-      role="menuitem"
-      disabled={disabled}
-      title={hint}
-      onClick={onSelect}
-      className={`flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-sm disabled:cursor-not-allowed disabled:opacity-40 ${
-        danger
-          ? "text-[#f23f43] enabled:hover:bg-[#f23f43] enabled:hover:text-white"
-          : "text-[#dbdee1] enabled:hover:bg-brand enabled:hover:text-white"
-      }`}
-    >
-      {children}
-    </button>
-  );
-}
-
-/** 悬停提示（右侧气泡），用于 team 图标栏 */
-export function RailTooltip({ text }: { text: string }) {
-  return (
-    <span
-      role="tooltip"
-      className="pointer-events-none absolute left-[64px] top-1/2 z-50 hidden -translate-y-1/2 whitespace-nowrap rounded-md bg-[#111214] px-3 py-2 text-sm font-semibold text-white shadow-lg group-hover:block group-focus-within:block"
-    >
-      <span className="absolute -left-1 top-1/2 h-2 w-2 -translate-y-1/2 rotate-45 bg-[#111214]" />
-      {text}
-    </span>
+    <Tooltip delay={0} closeDelay={0}>
+      {typeof children === "function" ? (
+        <Tooltip.Trigger
+          render={(props) => {
+            // Tooltip.Trigger 默认是 role=button 的 div：去掉 role / className，让子元素保持自己的语义和样式
+            const { role: _role, className: _cls, ...rest } = props as Record<string, unknown>;
+            return children(rest);
+          }}
+        />
+      ) : (
+        children
+      )}
+      <Tooltip.Content
+        placement="right"
+        offset={8}
+        showArrow
+        className="rounded-md bg-[#111214] px-3 py-2 text-sm font-semibold whitespace-nowrap text-white shadow-lg"
+      >
+        <Tooltip.Arrow className="[&_path]:fill-[#111214]" />
+        {text}
+      </Tooltip.Content>
+    </Tooltip>
   );
 }
 
