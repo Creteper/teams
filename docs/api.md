@@ -452,13 +452,17 @@ Payload（**发送时**根据最新数据生成；消息在发送前被删除则
              "auth": "Authorization: Bearer <BOT_TOKEN>",
              "body_hint": { "content": "<@<sender_member_id>> …", "reply_to": "<message_id>" },
              "decline": { "method": "POST", "url": "https://…/api/v1/messages/<message_id>/decline",
-                          "body_hint": { "reason": "（可选，≤200 字）" } } },
+                          "body_hint": { "reason": "（可选，≤200 字）" } },
+             "history": { "method": "GET",
+                          "url": "https://…/api/v1/channels/<channel_id>/messages?before=<message.seq>&limit=50" } },
   "team":    { "id": "…", "name": "TeAms 开发组", "icon_url": null },
   "bot":     { "id": "…", "member_id": "…", "name": "grok", "display_name": "Grok",
                "avatar_url": "https://…/api/v1/avatars/…", "avatar_shape": "squircle", "avatar_color": "#5865F2" }
 }
 ```
-URL 均为基于 `TEAMS_PUBLIC_BASE_URL` 的绝对地址。`reply.decline` 是"声明不回复"的调用方式（§7.7），在 `reply` 对象的最后，不影响前面字段的顺序。ping 只含 `event/delivery_id/sent_at/team/bot`（按此顺序），不带 `X-TeAms-Message-Id` 等消息相关请求头。
+URL 均为基于 `TEAMS_PUBLIC_BASE_URL` 的绝对地址。`reply.decline` 是"声明不回复"的调用方式（§7.7）；`reply.history` 是"拉触发消息之前的历史"的调用方式（GET，带 `before=<message.seq>&limit=50`，用 bot 令牌）。两者都追加在 `reply` 对象末尾，不影响前面字段的顺序。ping 只含 `event/delivery_id/sent_at/team/bot`（按此顺序），不带 `X-TeAms-Message-Id` 等消息相关请求头。
+
+**载荷不带上下文消息**：payload 只有触发消息本身。bot 需要上下文（例如上面的公告）时，用自己的 bot 令牌调 `GET /api/v1/channels/{channel_id}/messages?before=<message.seq>&limit=N`（即 `reply.history.url`），继续往前翻页、读单条、回复、编辑删除等见 [§8.6 bot 怎么自己查看历史和发消息](#86-bot-怎么自己查看历史和发消息)。
 
 ### 7.3 超时与重试
 
@@ -602,7 +606,7 @@ Delivery 对象：`{id, message_id, channel_id, event, status, attempts, last_st
 | `POST /api/v1/teams/{team_id}/attachments`、`GET /api/v1/attachments/{id}`、`POST /api/v1/attachments/urls` | |
 | `GET /api/v1/ws` | |
 
-其它接口 → 403。
+其它接口 → 403。用法示例见 §8.6。
 
 ### 8.5 PATCH /api/v1/bots/me
 
@@ -616,6 +620,79 @@ JSON：
 - 也可用 multipart：文本字段 `display_name` / `description` / `avatar_url` / `avatar_shape` / `avatar_color`，文件字段 **`avatar`**（不能与 `avatar_url` 同时给）。
 - 返回 `{bot, member}`；有变化时推送 `member.updated`（data 为 Member）。
 - 频率：每个 bot 6 次/分钟（`/bots/me` 的 PATCH 和头像上传共用）。
+
+### 8.6 bot 怎么自己查看历史和发消息
+
+webhook 只推送触发消息（§7.2）。上下文、历史、回复都由 bot **用自己的令牌**调普通消息接口完成，权限和普通成员一样，但**只限 bot 所在的 team**：别的 team 的 team / 频道 / 消息 / 成员一律 404（不暴露是否存在）。下面的命令可以直接照抄，把 `<BOT_TOKEN>`、`<channel_id>` 等换成实际值（`channel_id`、`message.id`、`message.seq`、`sender.member_id` 都在 webhook payload 里）。
+
+```bash
+BASE=https://teams.lovekaifa.com
+AUTH="Authorization: Bearer <BOT_TOKEN>"
+```
+
+**0. 我是谁、在哪个 team**
+```bash
+curl -s "$BASE/api/v1/bots/me" -H "$AUTH"        # → {bot, member, team}，team.id 用于下面的 team 级接口
+```
+
+**1. 拿到 webhook 后，拉触发消息之前的 N 条**（不含触发消息本身；N ≤ 100）
+```bash
+curl -s "$BASE/api/v1/channels/<channel_id>/messages?before=<message.seq>&limit=20" -H "$AUTH"
+```
+返回列表信封 `{ "items": [Message…], "next_cursor": "1001", "has_more": true }`：
+- `items` 一律按 `seq` **升序**（旧的在前），最后一条就是紧挨着触发消息的那条；已删除的消息也在里面，带 `deleted: true`、`content: ""`，按需跳过。
+- 每条是完整的 Message（§5.2）：`content` 是原始文本（@ 是 `<@member_id>`），@ 的显示名看 `mentions`，发送者看 `sender`（当前显示名），`kind` 为 `bot_declined` 的是"某 bot 选择不回复"的提示。
+- `reply.history.url` 就是这条请求（`limit=50`），可以直接用。
+
+**2. 继续往更早翻页**：把上一页的 `next_cursor`（= 本页最小 seq）作为新的 `before`，直到 `has_more: false`。
+```bash
+curl -s "$BASE/api/v1/channels/<channel_id>/messages?before=<next_cursor>&limit=50" -H "$AUTH"
+```
+往新的方向用 `after=<seq>`（返回 seq 大于它的最早 N 条，`next_cursor` = 本页最大 seq）；不带 `before/after` 返回最新 N 条。`before` 和 `after` 不能同时用（400）。
+
+**3. 读单条**（例如 `message.reply_to` 指向的那条）
+```bash
+curl -s "$BASE/api/v1/messages/<message_id>" -H "$AUTH"
+```
+
+**4. 回复并 @ 对方**
+```bash
+curl -s -X POST "$BASE/api/v1/channels/<channel_id>/messages" -H "$AUTH" -H "Content-Type: application/json" \
+  -d '{"content":"<@<sender.member_id>> 收到，周五停机前我会提醒大家","reply_to":"<message.id>","client_msg_id":"<delivery_id>"}'
+```
+→ 201 Message（同一个 `client_msg_id` 24 小时内重发返回 200 和原消息，重试安全，§5.4）。`reply_to` 必须是同一频道的消息，否则 400。回复触发消息会把运行状态标为完成（§7.6）。
+
+**5. 编辑 / 删除自己的消息**
+```bash
+curl -s -X PATCH "$BASE/api/v1/messages/<my_message_id>" -H "$AUTH" -H "Content-Type: application/json" \
+  -d '{"content":"更正：停机改到周六"}'
+curl -s -X DELETE "$BASE/api/v1/messages/<my_message_id>" -H "$AUTH"      # → 204
+```
+只能改 / 删 bot **自己发的**消息；别人的消息 → 403（bot 不是 admin，不能删别人的）。编辑不会再触发 webhook。
+
+**6. 列频道**
+```bash
+curl -s "$BASE/api/v1/teams/<team_id>/channels" -H "$AUTH"          # 不分页，默认频道在前
+curl -s "$BASE/api/v1/channels/<channel_id>" -H "$AUTH"
+```
+bot 令牌拿到的 Channel 没有未读 / 置顶字段（那是按用户的）。bot 不能建频道、改频道。
+
+**7. 查成员**
+```bash
+curl -s "$BASE/api/v1/teams/<team_id>/members?type=user&limit=100" -H "$AUTH"
+curl -s "$BASE/api/v1/teams/<team_id>/members/<member_id>" -H "$AUTH"
+```
+成员列表默认 100、最多 200，翻页用 `cursor=<next_cursor>`；单个成员查询对已退出的成员也返回（`deleted: true`），便于解析旧消息里的 `<@id>`。
+
+**分页与限制汇总**
+
+| 接口 | limit 默认 / 上限 | 分页字段 |
+|---|---|---|
+| `GET /channels/{id}/messages` | 50 / 100（超过 100 按 100；`limit` 非正整数 → 400 `field: "limit"`） | `before` / `after`（seq）、`next_cursor`、`has_more` |
+| `GET /teams/{id}/members` | 100 / 200 | `cursor`、`next_cursor`、`has_more` |
+| `GET /teams/{id}/channels` | 不分页 | — |
+
+频率限制（§11）：bot 发消息每 bot 每频道 30 条/分钟（超出 429，`Retry-After`），编辑 / 删除 / 读取目前不限流，但请按需拉取（例如每次被 @ 只拉一两页），不要轮询——实时消息请用 WebSocket（§9）或 webhook。
 
 ---
 
@@ -780,3 +857,5 @@ IP 取连接地址；只有来自本机回环的请求（即 Caddy 反代）才�
 32. **修改成员角色时角色没变不再推送**（§3）：`PATCH /teams/{team_id}/members/{member_id}` 设成和当前相同的角色仍返回 200 Member，但不再写库、不再推 `member.updated`（之前每次都推）。其它规则不变，并补全了权限表：admin 可以升降其他 admin、可以把自己降为 member；owner 改自己或改 bot → 403；role 非法 → 400 `field: "role"`；成员不存在 → 404；没有 409。
 33. **删除频道后，其消息的附件也不能再访问**（§5.1）：之前频道删掉后，附件仍能通过 `GET /attachments/{id}`、`/content`、签名 URL、`POST /attachments/urls` 取到；现在与频道内消息一致返回 404 / 放进 `missing`。
 34. **文档补充（行为未变）**：频道名规则（去首尾空白、1–64 字符、只禁控制字符、不区分大小写唯一、409 `field: "name"`）、频道改名/删除权限表（默认频道可改名不可删、创建者可改名不可删）、软删除细节（§5.1）；`/me/avatar` 的 `member.updated` 推送、`DELETE` 幂等、字段名 `file`、各错误码、超过 4096 直接拒绝不缩放（§1、§10.1）；`member.updated` 的触发场景（§9.3）。
+35. **Bot 用自己的令牌查看历史和发消息**（§8.6，新增文档节）：核对并测试了 bot 令牌可以列频道、按 `before` / `after` 分页读消息、读单条（`GET /messages/{id}`）、带 `reply_to` 和 @ 发消息、编辑删除自己的消息、查成员列表和单个成员；这些接口原本就支持，权限限于 bot 所在 team（别的 team → 404，改删别人的消息 → 403）。webhook 载荷**不**携带上下文消息，需要上下文时 bot 自己拉（§7.2）。
+36. **webhook payload 的 `reply` 末尾新增 `history`**：`{ "method": "GET", "url": ".../channels/<channel_id>/messages?before=<message.seq>&limit=50" }`，即"拉触发消息之前的历史"的调用方式；`reply` 原有字段和顶层字段顺序不变。

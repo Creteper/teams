@@ -23,6 +23,7 @@ teams-server  (Go, 127.0.0.1:8090)
                          │
 Bot 处理后  ─────────────┘  POST /api/v1/channels/{id}/messages (Bearer <BOT_TOKEN>, reply_to=触发消息)
                             或 POST /api/v1/messages/{id}/decline（声明不回复）
+                            需要上下文时先 GET /api/v1/channels/{id}/messages?before=<seq>（同一令牌，api.md §8.6）
 ```
 
 单进程部署；状态全在 PostgreSQL 和上传目录里，进程可随时重启（投递队列不丢）。限流器和 WS hub 在进程内存中，因此**只支持单实例**。

@@ -623,12 +623,20 @@ type payloadDecline struct {
 	BodyHint payloadDeclineHint `json:"body_hint"`
 }
 
+// payloadHistory tells the bot how to page back through the channel with
+// its own token (§8.6); the payload itself carries no context messages.
+type payloadHistory struct {
+	Method string `json:"method"`
+	URL    string `json:"url"`
+}
+
 type payloadReply struct {
 	Method   string           `json:"method"`
 	URL      string           `json:"url"`
 	Auth     string           `json:"auth"`
 	BodyHint payloadReplyHint `json:"body_hint"`
 	Decline  payloadDecline   `json:"decline"`
+	History  payloadHistory   `json:"history"`
 }
 
 type payloadMention struct {
@@ -709,7 +717,9 @@ func (s *Server) buildDeliveryPayload(ctx context.Context, d webhook.Delivery) (
 		Reply: payloadReply{Method: "POST", URL: s.cfg.PublicBaseURL + "/api/v1/channels/" + ch.ID + "/messages",
 			Auth: "Authorization: Bearer <BOT_TOKEN>", BodyHint: payloadReplyHint{Content: "<@" + sm.ID + "> …", ReplyTo: m.ID},
 			Decline: payloadDecline{Method: "POST", URL: s.cfg.PublicBaseURL + "/api/v1/messages/" + m.ID + "/decline",
-				BodyHint: payloadDeclineHint{Reason: "（可选，≤200 字）"}}},
+				BodyHint: payloadDeclineHint{Reason: "（可选，≤200 字）"}},
+			History: payloadHistory{Method: "GET", URL: s.cfg.PublicBaseURL + "/api/v1/channels/" + ch.ID +
+				"/messages?before=" + strconv.FormatInt(m.Seq, 10) + "&limit=50"}},
 		Team: team,
 		Bot:  s.payloadBot(b),
 	}
