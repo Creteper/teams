@@ -115,7 +115,25 @@ backend/
 
 提交后：推送 `message.created`、`bot.run.completed`、`bot.run.started` / `bot.run.failed(no_webhook)`，唤醒 worker。
 
-已知限制：`seq` 由 identity 分配，并发事务提交顺序可能与 seq 顺序不一致，极端情况下 `after=` 补拉可能漏掉一条稍晚提交的较小 seq。单实例低并发下影响很小；后续可改为按频道加锁分配 seq。
+### 6.1 seq 与提交顺序
+
+问题：`messages.seq` 是全局 identity，值在 `INSERT` 时取得，但要到事务提交才对读者可见。两个并发事务 A（seq 10）、B（seq 11）若 B 先提交，客户端 `after=9` 拿到 11 后游标前移到 11，A 随后提交的 10 就永远不会被 `after=` 补拉到（漏消息）。
+
+做法：发送事务在 `INSERT messages` 之前执行
+
+```sql
+SELECT 1 FROM channels WHERE id = $1 AND deleted_at IS NULL FOR UPDATE;
+```
+
+同一频道的发送因此串行：seq 只在持有频道行锁之后才取号，锁在提交（或回滚）时释放；PostgreSQL 先让事务提交可见、再释放行锁，所以下一个事务取到的 seq 一定大于所有已可见的同频道消息。**同一频道内 seq 顺序 = 可见顺序**，`after=<seq>` 补拉不漏不重。频道在发送途中被删除时锁不到行，返回 404。
+
+锁顺序固定为：`client_msg_id` advisory lock → 频道行锁 → 各 bot 的 webhook 限流 advisory lock，其它路径不会反向持有，所以不会死锁。
+
+取舍：
+- **选行锁而不是每频道 `last_seq` 计数器列**：计数器（`UPDATE channels SET last_seq = last_seq + 1 RETURNING`）同样要锁频道行，并发度相同，但会把 seq 变成"频道内序号"，需要改列、迁移旧数据、并改变 API 中"seq 全局单调"的语义；行锁方案零迁移、接口不变。
+- **代价**：同一频道的发送被串行化，锁持有时间 = 从取锁到提交（插入消息、mentions、认领附件、写投递记录，通常几毫秒）。单频道吞吐上限约为每秒数百条，对聊天场景足够；不同频道之间互不影响。
+- 不同频道之间的 seq 仍可能与提交顺序不一致，这没有影响，因为游标总是按频道使用。WS `ready.last_seq` 只作参考，补拉应按频道用 `after=`。
+- 并发集成测试 `TestSeqConcurrentCatchUp`（8 个发送者 × 40 条，夹杂另一频道的消息，另有读者不停 `after=` 补拉）验证不漏、不重、seq 严格递增；去掉这把锁时该测试每次都会漏 1–3 条。
 
 ## 7. 实时推送
 

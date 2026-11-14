@@ -241,7 +241,7 @@ Channel 对象：
 }
 ```
 - `sender` 字段与成员对象一致：`member_id`、`type`、`display_name`、`avatar_url`、`avatar_shape`、`avatar_color`。
-- `seq`：全局单调递增整数，用于分页与断线补拉。
+- `seq`：全局单调递增整数，用于分页与断线补拉。**同一频道内 seq 顺序与消息可见顺序一致**：已经看到 seq=N 的客户端，之后用 `after=N` 不会漏掉任何 seq<N 的消息。
 - `reply_to`：被回复消息 id（必须同频道）。
 - `trigger_depth`：防循环深度（§7.4），服务端计算。
 - 已删除消息：`deleted: true`、`content: ""`、`mentions` 与 `attachments` 为空。

@@ -182,6 +182,17 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
+		// Serialize inserts per channel: the seq (identity) is drawn only after
+		// this row lock is held, and the lock is released at commit, so within a
+		// channel seq order == commit (visibility) order and after=<seq>
+		// catch-up can never skip a message that commits later with a smaller seq.
+		var locked int
+		if err := tx.QueryRow(ctx, `SELECT 1 FROM channels WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, c.ID).Scan(&locked); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return apierr.NotFound("频道")
+			}
+			return err
+		}
 		_, err = tx.Exec(ctx, `INSERT INTO messages(id, team_id, channel_id, sender_member_id, content, reply_to, trigger_depth, client_msg_id)
 			VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, msgID, c.TeamID, c.ID, a.MemberID, body.Content, replyTo, depth, clientID)
 		if err != nil {
