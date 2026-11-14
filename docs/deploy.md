@@ -19,7 +19,6 @@
 > **1. ICP 备案是前置条件**（当前状态：`lovekaifa.com` 已备案，`teams` 子域已解析到本机）。 `123.57.134.175` 属于阿里云中国大陆（北京）数据中心。大陆服务器上的域名在**完成 ICP 备案之前**，80/443 的 HTTP(S) 访问会被拦截（显示未备案提示页），Let's Encrypt 的 HTTP 验证也会失败，证书签不下来。
 > - 在阿里云「ICP 代备案管理系统」为 `lovekaifa.com` 提交备案（主体信息、域名实名、服务器绑定该 ECS 实例），审核一般 1–3 周。
 > - 备案通过、网站上线后 **30 天内**在「全国互联网安全管理服务平台」完成公安联网备案，并在页面底部展示 ICP 备案号（前端页脚，由 Tina 加）。
-> - 备案完成前**不要**把 DNS 指过去对外试用；如需提前联调，用下面的备选 C（ngrok，仅临时）。
 >
 > **2. 安全组（阿里云控制台 → ECS → 安全组，入方向）**
 >
@@ -264,19 +263,19 @@ map $http_upgrade $teams_connection_upgrade {
 
 3）先签证书。先放一个只有 80 的站点用于验证：
 ```bash
-sudo install -d -m 755 /var/www/certbot
+sudo install -d -m 755 /var/www/letsencrypt     # 服务器上已存在（现有站点共用的 webroot），有则跳过
 sudo tee /etc/nginx/sites-available/teams.lovekaifa.com >/dev/null <<'NGINX'
 server {
     listen 80;
     listen [::]:80;
     server_name teams.lovekaifa.com;
-    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+    location /.well-known/acme-challenge/ { root /var/www/letsencrypt; }
     location / { return 404; }
 }
 NGINX
 sudo ln -s /etc/nginx/sites-available/teams.lovekaifa.com /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
-sudo certbot certonly --webroot -w /var/www/certbot -d teams.lovekaifa.com \
+sudo certbot certonly --webroot -w /var/www/letsencrypt -d teams.lovekaifa.com \
      --deploy-hook "systemctl reload nginx"           # 只签 teams 这一张，不动其它证书；续期走已有的 certbot.timer
 sudo certbot renew --dry-run --cert-name teams.lovekaifa.com
 ```
@@ -287,7 +286,7 @@ server {
     listen 80;
     listen [::]:80;
     server_name teams.lovekaifa.com;
-    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+    location /.well-known/acme-challenge/ { root /var/www/letsencrypt; }
     location / { return 301 https://$host$request_uri; }
 }
 
@@ -463,7 +462,7 @@ scp backend/bin/teams-server-linux-amd64 <SSH_USER>@123.57.134.175:/tmp/teams-se
 VERSION=<VERSION>
 sudo install -d /opt/teams/releases/$VERSION
 sudo install -m 755 /tmp/teams-server-$VERSION /opt/teams/releases/$VERSION/teams-server
-sudo /usr/local/bin/teams-backup.sh                 # 发布前先备份（迁移不可逆时可回滚）
+[ -x /usr/local/bin/teams-backup.sh ] && sudo /usr/local/bin/teams-backup.sh   # 发布前先备份；首次部署时脚本和库都还没有，自动跳过
 sudo ln -sfn /opt/teams/releases/$VERSION /opt/teams/current
 sudo systemctl restart teams
 sudo journalctl -u teams -n 50 --no-pager           # 看到 "listening" 且无错误
@@ -504,9 +503,13 @@ tar -C /var/lib/teams -czf "$DIR/teams-uploads-$TS.tar.gz" uploads
 # 3) 本地保留 14 天
 find "$DIR" -type f -mtime +$KEEP_DAYS -delete
 
-# 4) 异地：同步到阿里云 OSS（另一地域、私有 Bucket、开启版本控制），
-#    凭据放在 /root/.ossutilconfig（600），使用只允许写该 Bucket 的 RAM 子账号 AccessKey
-ossutil cp -r "$DIR" "oss://<BACKUP_BUCKET>/teams/" --update
+# 4) 异地（可选，用户提供 OSS 后再启用）：同步到阿里云 OSS（另一地域、私有 Bucket、开启版本控制），
+#    凭据放在 /root/.ossutilconfig（600），使用只允许写该 Bucket 的 RAM 子账号 AccessKey。
+#    未配置时只做本机备份；异地同步失败只记日志，不让整次备份失败。
+OSS_BUCKET=""   # 例如 oss://<BACKUP_BUCKET>/teams/ ，留空表示不做异地
+if [ -n "$OSS_BUCKET" ] && command -v ossutil >/dev/null && [ -f /root/.ossutilconfig ]; then
+  ossutil cp -r "$DIR" "$OSS_BUCKET" --update || echo "WARN: OSS sync failed" >&2
+fi
 ```
 （也可换成 `rclone` 同步到其它对象存储；OSS 侧配置生命周期规则保留 90 天。）
 
@@ -555,7 +558,7 @@ sudo -u postgres dropdb teams_restore_test
 - [ ] `https://teams.lovekaifa.com/api/v1/healthz` 返回 ok，证书有效；`http://` 自动跳转 https。
 - [ ] 浏览器：注册/登录、建 team、发消息、上传图片和视频（接近 100MB）、WebSocket 实时收到消息、刷新 `/invite/<code>` 页面不 404。
 - [ ] 配置一个测试 bot，webhook 指向 Grok Bot 的 HTTPS 地址，`POST /bots/{id}/webhook/test` 返回 ok；@bot 后频道出现 `bot.run.*` 状态与回复。
-- [ ] 备份 timer 已启用，手动跑一次 `teams-backup.sh`，OSS 中可见文件；做一次恢复演练。
+- [ ] 备份 timer 已启用，手动跑一次 `teams-backup.sh`，`/var/backups/teams` 中可见文件（配置了 OSS 的话 OSS 中也可见）；做一次恢复演练。
 - [ ] （用户决定后）SSH 改为仅密钥登录，部署用的口令已轮换。
 - [ ] `unattended-upgrades` 开启安全更新；`journalctl -u teams`、`/var/log/nginx/teams-*.log` 有轮转。
 
