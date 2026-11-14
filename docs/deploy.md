@@ -178,6 +178,37 @@ TEAMS_LOG_LEVEL=info
 
 > `TEAMS_SECRET_KEY` 一旦丢失或更换，已保存的 webhook 密钥无法解密、已发出的附件签名失效。把它和数据库口令一起**离线**保存（密码管理器），备份时不要和数据库备份放在同一处。
 
+#### B.5.1 浏览器推送（Web Push / VAPID，可选）
+
+三个变量写在**同一个** `/etc/teams/teams.env`（root:root 600，不入库）里；三项都不写 = 推送关闭，服务照常运行（`GET /api/v1/push/vapid-public-key` 返回 `enabled: false`）。只写一部分或格式不对，服务会**启动失败**并在日志里说明是哪个变量（不打印值）。
+
+```
+TEAMS_VAPID_PUBLIC_KEY=<VAPID_PUBLIC_KEY>
+TEAMS_VAPID_PRIVATE_KEY=<VAPID_PRIVATE_KEY>
+TEAMS_VAPID_SUBJECT=mailto:<OPS_EMAIL>
+```
+
+生成（任选其一，**只输出到终端**，直接粘进 teams.env，不要存到别的文件、不要提交、不要贴进聊天）：
+```bash
+# 方式 1：仓库自带的小工具（在 Mac 的 backend/ 目录或服务器上有 Go 时）
+cd backend && go run ./cmd/vapidgen
+# 方式 2：Node
+npx web-push generate-vapid-keys
+```
+服务器上没有 Go/Node 时，可在 Mac 上交叉编译 `GOOS=linux GOARCH=amd64 go build -o vapidgen ./cmd/vapidgen`，上传后运行一次再删掉；或在 Mac 上生成后通过 SSH 直接写入 teams.env（不要经过聊天或文档）。
+
+写入方式（避免值进 shell 历史：用编辑器打开，或 `sudo tee -a` 后粘贴）：
+```bash
+sudo -e /etc/teams/teams.env      # 追加上面三行，填真实值
+sudo systemctl restart teams
+journalctl -u teams -n 20 | grep -i "web push"   # 应看到 "web push enabled"
+```
+
+注意：
+- **密钥对一旦启用就不要更换**：浏览器订阅绑定在公钥上，换了公钥后所有已有订阅都会失效（推送服务返回 403/404/410，后端会清理 404/410），用户需要在网页上重新允许通知。私钥和 `TEAMS_SECRET_KEY` 一样离线保存。
+- 推送由后端**出站**连浏览器厂商的推送服务：Chrome / 基于 Chromium 的浏览器是 `fcm.googleapis.com`，Firefox 是 `updates.push.services.mozilla.com`，Edge 是 `*.notify.windows.com`，Safari 是 `web.push.apple.com`。**阿里云北京的服务器通常连不上 FCM**（Chrome 用户在国内收不到推送，浏览器端本身也需要能连 Google 推送服务）；Edge / Firefox / Safari 一般可用。出站请求不走系统代理。上线后在服务器上 `curl -sS -m 5 -o /dev/null -w '%{http_code}\n' https://fcm.googleapis.com/` 可快速判断。
+- 不需要开放任何新端口，也不需要改 nginx（推送是后端主动出站）。前端的 Service Worker 文件需要由 nginx 按普通静态文件提供，且在站点根路径下（作用域覆盖 `/`）。
+
 ### B.6 后端：二进制与 systemd
 
 在开发机（Mac）交叉编译：
@@ -477,6 +508,8 @@ curl -fsS https://teams.lovekaifa.com/api/v1/healthz
 ```
 回滚：`sudo ln -sfn /opt/teams/releases/<旧版本> /opt/teams/current && sudo systemctl restart teams`（若新版本包含数据库迁移，回滚二进制前要先用发布前的备份恢复数据库）。保留最近 5 个版本目录。
 
+> 迁移 `0004`–`0006`（未读/置顶、推送订阅、bot 声明不回复）都是**只加不改**：新增表、新增带默认值的列、`team_members` 上的 BEFORE INSERT 触发器、放宽 `run_status` 约束。旧二进制在新库上可以正常运行，所以回滚这一版只换二进制即可，不必恢复数据库。迁移在启动时自动执行，`UPDATE team_members SET join_seq=…` 对现有数据量是瞬时的。
+
 **前端**
 ```bash
 # 开发机
@@ -571,6 +604,7 @@ sudo -u postgres dropdb teams_restore_test
 - [ ] 从外网 `curl -m 5 http://123.57.134.175:8090/` 与 `:5432` 连接失败。
 - [ ] `/etc/teams/teams.env` 权限 600；`TEAMS_ENV=production`、`TEAMS_WEBHOOK_ALLOW_INSECURE_LOCAL=false`、`TEAMS_CORS_ORIGINS=https://teams.lovekaifa.com`、`TEAMS_PUBLIC_BASE_URL=https://teams.lovekaifa.com`。
 - [ ] `TEAMS_SECRET_KEY`、数据库口令为现场随机生成并已离线保存；仓库中 `git grep` 不到任何真实密钥。
+- [ ] （启用浏览器推送时）`TEAMS_VAPID_PUBLIC_KEY` / `_PRIVATE_KEY` / `_SUBJECT` 三项都在 teams.env 里，日志有 `web push enabled`；VAPID 私钥已离线保存。
 - [ ] `https://teams.lovekaifa.com/api/v1/healthz` 返回 ok，证书有效；`http://` 自动跳转 https。
 - [ ] 浏览器：注册/登录、建 team、发消息、上传图片和视频（接近 100MB）、WebSocket 实时收到消息、刷新 `/invite/<code>` 页面不 404。
 - [ ] 配置一个测试 bot，webhook 指向 Grok Bot 的 HTTPS 地址，`POST /bots/{id}/webhook/test` 返回 ok；@bot 后频道出现 `bot.run.*` 状态与回复。

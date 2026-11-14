@@ -92,7 +92,7 @@
 `{ "username": "...", "password": "<PASSWORD>" }` → 200，结构同注册。失败统一 `401`（不区分用户不存在/密码错）。
 
 ### POST /api/v1/auth/logout
-吊销当前会话 → `204`。
+吊销当前会话 → `204`。该会话登记的浏览器推送订阅（§9.4）一并删除。
 
 ### GET /api/v1/me
 **直接返回 User 对象**（不包 `{user}`）：
@@ -137,6 +137,7 @@ Team 对象：
 |---|---|---|---|
 | GET | `/api/v1/teams/{team_id}/members` | 成员（含 bot） | `?type=user|bot&limit=&cursor=`；按 member id（≈加入时间）升序 |
 | POST | `/api/v1/teams/{team_id}/members` | owner/admin | 按用户名添加：`{ "username": "tina", "role": "member" }`（role 可为 `member`/`admin`）→ 201 Member；已是成员 → 409 |
+| GET | `/api/v1/teams/{team_id}/members/{member_id}` | 成员（含 bot） | 单个成员资料（"查看资料"用）→ 200 Member；已退出的成员 / 已删除的 bot 也能查到（`deleted: true`），便于从旧消息点开；不是本 team 的成员或 id 无效 → 404 |
 | PATCH | `/api/v1/teams/{team_id}/members/{member_id}` | owner/admin | `{ "role": "admin"|"member" }`；不能改 owner 和 bot |
 | DELETE | `/api/v1/teams/{team_id}/members/{member_id}` | owner/admin，或本人 | 移除 → 204；owner 不能被移除（403），owner 移除自己 → 409 `owner_cannot_leave`；bot 请用 `DELETE /bots/{id}` |
 | DELETE | `/api/v1/teams/{team_id}/members/me` | 本人（用户） | 退出 team → 204；owner → **409 `owner_cannot_leave`** |
@@ -145,9 +146,10 @@ Member 对象：
 ```json
 { "id": "<member_id>", "team_id": "…", "type": "user", "user_id": "…", "bot_id": null,
   "display_name": "Tina", "username": "tina", "avatar_url": null,
-  "avatar_shape": null, "avatar_color": null, "role": "member", "joined_at": "…" }
+  "avatar_shape": null, "avatar_color": null, "description": null, "role": "member", "joined_at": "…" }
 ```
-bot 成员：`"type": "bot"`, `"bot_id": "…"`, `"user_id": null`, `"role": "bot"`，`username` 为 bot 的 `name`，`avatar_shape` / `avatar_color` 见 §8.2。
+bot 成员：`"type": "bot"`, `"bot_id": "…"`, `"user_id": null`, `"role": "bot"`，`username` 为 bot 的 `name`，`description` 为 bot 的描述（用户成员恒为 `null`），`avatar_shape` / `avatar_color` 见 §8.2。
+所有返回 Member 的地方（列表、单个、`member.*` 事件）都带 `description`。已退出 / 已删除的成员只会在单个查询里出现，并带 `"deleted": true`。
 
 **推送规则**（按用户名添加与接受邀请一致）：
 - 加入：被加入的用户本人连接收到 `team.joined`（完整 Team 对象），并自动订阅该 team；team 里其他人收到 `member.joined`（本人不收）。
@@ -211,14 +213,19 @@ team 成员（用户和 bot）可在任意频道读写，无需加入频道。
 | GET | `/api/v1/channels/{channel_id}` | 成员 |
 | PATCH | `/api/v1/channels/{channel_id}` | owner/admin/创建者，`{name?, topic?}`，推送 `channel.updated` |
 | DELETE | `/api/v1/channels/{channel_id}` | owner/admin；默认频道不能删（403）→ 204，推送 `channel.deleted` |
+| POST | `/api/v1/channels/{channel_id}/read` | 用户会话（bot 403）；标记已读，见 §5.7 |
+| PUT / DELETE | `/api/v1/channels/{channel_id}/pin` | 用户会话（bot 403）；置顶 / 取消置顶（只影响自己），见 §5.7 |
+| GET | `/api/v1/me/unread` | 用户会话；所有 team 里有未读的频道汇总，见 §5.7 |
 
 `name` 1–64 字符，team 内不区分大小写唯一（409）；`topic` ≤ 250。
 
 Channel 对象：
 ```json
 { "id": "…", "team_id": "…", "name": "general", "topic": "", "is_default": true,
-  "created_by_member_id": "…", "last_message_seq": 1024, "created_at": "…" }
+  "created_by_member_id": "…", "last_message_seq": 1024, "created_at": "…",
+  "pinned": false, "pinned_at": null, "last_read_seq": 1020, "unread_count": 3, "has_unread_mention": true }
 ```
+最后五个字段是**调用者本人**的状态（§5.7），只出现在**用户会话**调用 `GET /teams/{team_id}/channels` 和 `GET /channels/{channel_id}` 的响应里；bot 令牌的响应、`POST/PATCH` 频道的响应、以及 `channel.created` / `channel.updated` 推送里**没有**这几个字段（它们是发给整个 team 的）。列表顺序不变（默认频道在前，再按创建时间）；置顶频道排在前面由前端按 `pinned_at` 自行排序。
 
 ### 5.2 消息对象
 
@@ -226,6 +233,7 @@ Channel 对象：
 {
   "id": "0193a1b2-…",
   "seq": 1025,
+  "kind": "message",
   "team_id": "…",
   "channel_id": "…",
   "sender": { "member_id": "…", "type": "user", "display_name": "Creteper",
@@ -241,6 +249,7 @@ Channel 对象：
 }
 ```
 - `sender` 字段与成员对象一致：`member_id`、`type`、`display_name`、`avatar_url`、`avatar_shape`、`avatar_color`。
+- `kind`：`"message"`（普通消息）或 `"bot_declined"`（bot 声明不回复的提示，§7.7）。前端按 `kind` 渲染：`bot_declined` 显示为系统提示样式，文案由前端拼（如「{sender.display_name} 选择不回复」，`content` 非空时附上原因），挂在 `reply_to` 指向的触发消息下面。普通发消息接口不能指定 `kind`（请求里的 `kind` 字段会被忽略）。
 - `seq`：全局单调递增整数，用于分页与断线补拉。**同一频道内 seq 顺序与消息可见顺序一致**：已经看到 seq=N 的客户端，之后用 `after=N` 不会漏掉任何 seq<N 的消息。
 - `reply_to`：被回复消息 id（必须同频道）。
 - `trigger_depth`：防循环深度（§7.4），服务端计算。
@@ -281,8 +290,42 @@ Channel 对象：
 
 ### 5.6 编辑 / 删除
 
-- `PATCH /api/v1/messages/{message_id}` `{ "content": "…" }`：仅发送者；重新解析 mentions；推送 `message.updated`；**编辑不触发 webhook**。
+- `PATCH /api/v1/messages/{message_id}` `{ "content": "…" }`：仅发送者；重新解析 mentions；推送 `message.updated`；**编辑不触发 webhook，也不触发浏览器推送**。`kind` 不是 `message` 的消息（`bot_declined`）不能编辑 → 403。
 - `DELETE /api/v1/messages/{message_id}`：发送者或 owner/admin；软删除 → 204；推送 `message.deleted` `{id, channel_id, seq}`。
+
+### 5.7 未读与置顶（按用户）
+
+已读位置和置顶都按**用户**记录（表 `user_channel_state`，键为 user_id + channel_id），所以同一账号在多个设备 / 标签页之间同步；bot 没有这些状态。
+
+**已读位置与未读数**
+- 有效已读位置 = max(用户标记过的 `last_read_seq`, 加入 team 时的 seq)。**加入 team 时视为之前的消息全部已读**：服务端在成员加入时记下当时最新的消息 seq（`team_members.join_seq`）；退出后再加入按新的加入时间算。上线这个版本时，已有成员全部视为已读（迁移把 `join_seq` 设为当时的最大 seq）。加入之后才创建的频道，里面的消息都算未读。
+- `unread_count`：seq 大于有效已读位置、**未删除**、`kind = "message"`、且**不是自己发的**消息条数。**最多计到 1000**（≥1000 时返回 1000，前端显示 "999+" 即可）。
+- `has_unread_mention`：上述未读消息里有没有 @ 我（基于 mentions 里我的 member_id）。
+- 自己发消息时，服务端把自己的已读位置推进到这条消息（相当于发完自动已读），并给自己推 `channel.read`。
+- 已读位置**只前进不后退**。
+
+`POST /api/v1/channels/{channel_id}/read`（用户会话；非成员 404，bot 403）
+```json
+// 请求（body 可省略：省略或不带 seq = 标到频道最新一条）
+{ "seq": 1025 }
+// 200
+{ "channel_id": "…", "team_id": "…", "pinned": false, "pinned_at": null,
+  "last_read_seq": 1025, "unread_count": 0, "has_unread_mention": false }
+```
+- `seq` 必须 ≥ 0（否则 400 `validation_failed`）；大于频道最新 seq 时按最新算（seq 全局递增，不能预先把未来的消息标成已读）；比当前位置小时不变（仍返回当前状态）。
+- 位置有变化时，给**本人所有连接**推 `channel.read`（data 同响应体），用于多设备同步；没变化不推。
+
+`PUT /api/v1/channels/{channel_id}/pin` / `DELETE /api/v1/channels/{channel_id}/pin`（用户会话；非成员 404，bot 403）
+- 幂等：重复置顶保持原来的 `pinned_at`；取消未置顶的频道也是 200。响应体同上（`pinned: true/false`、`pinned_at`）。
+- 状态有变化时，给**本人所有连接**推 `channel.pinned`（data 同响应体）；其他成员看不到。
+
+`GET /api/v1/me/unread`（用户会话）→ 所有 team 中 `unread_count > 0` 或 `has_unread_mention` 的频道（没有未读的频道不出现），用于 team 图标上的红点：
+```json
+{ "items": [ { "channel_id": "…", "team_id": "…", "pinned": false, "pinned_at": null,
+               "last_read_seq": 1020, "unread_count": 3, "has_unread_mention": true } ] }
+```
+
+**前端维护未读的建议**：进入 team 时用频道列表的字段初始化；收到 `message.created` 时，如果 `kind == "message"`、不是自己发的、不是当前正在看的频道，则 `unread_count + 1`，`mentions` 里有自己的 member_id 则 `has_unread_mention = true`；正在看的频道收到新消息时调 `POST /read`。收到 `channel.read` / `channel.pinned` 时直接用 data 覆盖该频道的状态。`message.deleted` 不会推送新的未读数，需要精确值时重新拉列表。断线重连后重新拉频道列表。
 
 ---
 
@@ -370,13 +413,15 @@ Payload（**发送时**根据最新数据生成；消息在发送前被删除则
                "content_plain": "@Grok 帮我总结" },
   "reply": { "method": "POST", "url": "https://…/api/v1/channels/<channel_id>/messages",
              "auth": "Authorization: Bearer <BOT_TOKEN>",
-             "body_hint": { "content": "<@<sender_member_id>> …", "reply_to": "<message_id>" } },
+             "body_hint": { "content": "<@<sender_member_id>> …", "reply_to": "<message_id>" },
+             "decline": { "method": "POST", "url": "https://…/api/v1/messages/<message_id>/decline",
+                          "body_hint": { "reason": "（可选，≤200 字）" } } },
   "team":    { "id": "…", "name": "TeAms 开发组", "icon_url": null },
   "bot":     { "id": "…", "member_id": "…", "name": "grok", "display_name": "Grok",
                "avatar_url": "https://…/api/v1/avatars/…", "avatar_shape": "squircle", "avatar_color": "#5865F2" }
 }
 ```
-URL 均为基于 `TEAMS_PUBLIC_BASE_URL` 的绝对地址。ping 只含 `event/delivery_id/sent_at/team/bot`（按此顺序），不带 `X-TeAms-Message-Id` 等消息相关请求头。
+URL 均为基于 `TEAMS_PUBLIC_BASE_URL` 的绝对地址。`reply.decline` 是"声明不回复"的调用方式（§7.7），在 `reply` 对象的最后，不影响前面字段的顺序。ping 只含 `event/delivery_id/sent_at/team/bot`（按此顺序），不带 `X-TeAms-Message-Id` 等消息相关请求头。
 
 ### 7.3 超时与重试
 
@@ -411,9 +456,10 @@ webhook URL 必须 `https://`；webhook 与远程头像都在**建立连接时**
 | `bot.run.retrying` | 失败且将重试 | `attempt`, `next_retry_at`, `reason`, `status_code` |
 | `bot.run.failed` | 最终失败 | `attempt?`, `reason`, `status_code`（可空） |
 | `bot.run.completed` | 该 bot 发出 `reply_to = trigger_message_id` 的消息 | `reply_message_id` |
+| `bot.run.declined` | 该 bot 调 `POST /messages/{trigger_message_id}/decline` 声明不回复（§7.7） | `decline_message_id`, `reason`（可空） |
 
 `reason`：`no_webhook` / `timeout` / `network_error` / `http_error` / `invalid_url`，另有 `message_deleted`（发送前触发消息被删）。
-状态存在投递记录里；`completed` 优先级最高，之后到达的 delivered/retrying 不会覆盖它。
+状态存在投递记录里；`completed` 和 `declined` 都是终态，之后到达的 delivered/retrying 不会覆盖它们；声明不回复之后 bot 仍可回复（消息正常发出），但状态保持 `declined`、不再发 `bot.run.completed`。`declined` 时 `GET /bot-runs` 的 `reply_message_id` 是那条提示消息的 id。
 
 `GET /api/v1/channels/{channel_id}/bot-runs?active=true`（成员，含 bot）→
 ```json
@@ -422,6 +468,28 @@ webhook URL 必须 `https://`；webhook 与远程头像都在**建立连接时**
   "reply_message_id": null, "started_at": "…", "updated_at": "…" } ] }
 ```
 `active=true`：状态为 started/delivered/retrying 且 10 分钟内创建的（最多 100 条，旧的在前）——页面刷新后恢复"处理中"状态用。不带 `active`：最近 50 条（新的在前）。
+
+### 7.7 Bot 声明不回复
+
+bot 被 @ 后可以明确表示"这条不回复"。TeAms 会在频道里插入一条提示消息（所有人可见、实时推送、刷新后仍在），把该次运行标记为 `declined`，频道里的"正在处理…"随之结束。
+
+**为什么用单独的接口，而不是 webhook 的响应体**：webhook 的接收方（例如 Grok Bot 的 webhook 地址）会在 bot 真正处理之前就返回 2xx，响应内容不由 bot 控制；所以"不回复"必须由 bot 处理完后用自己的令牌主动调接口声明，和发回复消息是同一条路径。
+
+`POST /api/v1/messages/{message_id}/decline`（**仅 bot 令牌**；`message_id` 是 webhook 里的 `message.id`，即触发消息）
+```bash
+curl -X POST "https://teams.lovekaifa.com/api/v1/messages/<message_id>/decline" \
+  -H "Authorization: Bearer <BOT_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"reason": "这个问题不在我的服务范围内"}'
+```
+- body 可省略；`reason` 可选，去掉首尾空白后 0–200 字，不能含控制字符（超长 → 400 `validation_failed`）。
+- **201** → 新建的提示消息（Message，`kind: "bot_declined"`，`sender` 是该 bot，`reply_to` = 触发消息，`content` = reason 或 `""`，`mentions` 恒为空，`trigger_depth` 恒为 0）。同时推送 `message.created`（data 为这条提示消息）和 `bot.run.declined`（§7.6）。
+- 重复调用幂等：**200** + 同一条提示消息，不重复推送（第二次的 reason 不会覆盖第一次）。
+- 这条消息没有 @ 该 bot（没有对应的 `message.mention` 投递记录）→ **403 `not_mentioned`**。
+- 已经回复过（运行状态 `completed`）→ **409 `already_replied`**。
+- 消息不存在、已删除、所在频道已删除或不在该 bot 的 team → **404**。用户会话调用 → 403。
+
+提示消息的特殊规则：不解析 @（reason 里写 `<@id>` 只是文本，不进 `mentions`）、**不触发 webhook**、**不触发浏览器推送**、**不计入未读数**、不计入防循环深度（`trigger_depth` 为 0，也不影响触发消息的深度）、**不能编辑**（403），可以像普通消息一样被删除（发送者 bot 或 owner/admin）。
 
 ---
 
@@ -492,6 +560,8 @@ Delivery 对象：`{id, message_id, channel_id, event, status, attempts, last_st
 | `GET /api/v1/teams/{team_id}`、`/members`、`/channels`、`/bots` | 仅所属 team |
 | `GET /api/v1/channels/{id}`、`/messages`、`/bot-runs`；`GET /api/v1/messages/{id}` | |
 | `POST /api/v1/channels/{id}/messages`；`PATCH / DELETE /api/v1/messages/{id}`（仅自己的） | |
+| `POST /api/v1/messages/{id}/decline` | 声明不回复（§7.7） |
+| `GET /api/v1/teams/{team_id}/members/{member_id}` | 单个成员资料 |
 | `POST /api/v1/teams/{team_id}/attachments`、`GET /api/v1/attachments/{id}`、`POST /api/v1/attachments/urls` | |
 | `GET /api/v1/ws` | |
 
@@ -542,7 +612,7 @@ JSON：
 
 | type | data | 接收者 |
 |---|---|---|
-| `message.created` / `message.updated` | Message | team |
+| `message.created` / `message.updated` | Message（注意 `kind`，`bot_declined` 不计未读） | team |
 | `message.deleted` | `{id, channel_id, seq}` | team |
 | `channel.created` / `channel.updated` | Channel | team |
 | `channel.deleted` | `{id}` | team |
@@ -553,9 +623,38 @@ JSON：
 | `team.updated` | Team | team |
 | `team.removed` | `{team_id}` | **仅**被移出/退出的用户，之后取消订阅 |
 | `team.deleted` | `{team_id}` | team |
-| `bot.run.*` | 见 §7.6 | team |
+| `bot.run.*` | 见 §7.6（含 `bot.run.declined`） | team |
+| `channel.read` | `{channel_id, team_id, pinned, pinned_at, last_read_seq, unread_count, has_unread_mention}` | **仅本人**（该用户的所有连接）；已读位置前进时（标记已读、自己发消息） |
+| `channel.pinned` | 同上 | **仅本人**；置顶 / 取消置顶时 |
 
 没有 presence / typing 事件。断线重连后用 `GET /channels/{id}/messages?after=<最后 seq>` 补拉。
+
+### 9.4 浏览器推送（Web Push，关掉网页也能收到）
+
+标准 Web Push（RFC 8030 / 8291 加密 / 8292 VAPID）。**只在用户被 @ 时推送**；自己 @ 自己不推；bot 不接收推送（bot @ 用户会推给该用户）；编辑消息、`bot_declined` 提示消息不推。服务器没配置 VAPID（§13）时推送关闭，其他功能不受影响。
+
+| 方法 | 路径 | 权限 | 说明 |
+|---|---|---|---|
+| GET | `/api/v1/push/vapid-public-key` | 用户会话 | `{ "enabled": true, "public_key": "<base64url>" }`；未配置时 `{ "enabled": false, "public_key": null }` |
+| POST | `/api/v1/push/subscriptions` | 用户会话（bot 403） | body 为浏览器 `PushSubscription.toJSON()`：`{ "endpoint": "https://…", "expirationTime": null, "keys": { "p256dh": "…", "auth": "…" } }` → 新建 **201** / 已存在 **200**，`{id, endpoint, created_at, updated_at}`；未配置推送 → **503 `push_disabled`** |
+| DELETE | `/api/v1/push/subscriptions?endpoint=<urlencoded>` | 用户会话 | 也可用 JSON body `{ "endpoint": "…" }`；只删自己的，**总是 204**；缺 endpoint → 400 |
+
+- 订阅按 `endpoint` upsert，绑定到**当前用户和当前登录会话**：同一浏览器换账号登录后再订阅会转到新账号；**退出登录（或会话过期）时该会话的订阅自动删除**，避免退出后仍收到通知。每个用户最多保留 20 个订阅（超出删最旧的）。
+- 校验：`endpoint` 必须是 `https://` 公网地址（拒绝内网/本机，同 §7.5；仅 `TEAMS_ENV=dev` + `TEAMS_WEBHOOK_ALLOW_INSECURE_LOCAL=true` 时放宽）；`keys.p256dh` 为 65 字节 P-256 公钥、`keys.auth` 为 16 字节，base64url（有无 `=` 均可）。不合法 → 400 `validation_failed`（`details.field` 为 `endpoint` / `keys.p256dh` / `keys.auth`）。
+- 发送：发消息请求提交后**异步**发送，不阻塞发消息；TTL 24 小时、`Urgency: high`、单次超时 10 秒、不重试。推送服务返回 **404 / 410**（订阅已失效）时自动删除该订阅；其它错误只记日志（日志只有订阅 id 和推送服务域名，不记 endpoint 全文和密钥）。
+
+Service Worker 收到的 JSON（解密后）：
+```json
+{ "type": "mention",
+  "tag": "msg-<message_id>",
+  "team":    { "id": "…", "name": "TeAms 开发组" },
+  "channel": { "id": "…", "name": "general" },
+  "sender":  { "member_id": "…", "display_name": "Creteper", "avatar_url": "/api/v1/avatars/…" },
+  "message": { "id": "…", "seq": 1025, "excerpt": "@Tina 帮我看一下这个接口…" },
+  "url": "/teams/<team_id>/channels/<channel_id>?msg=<message_id>" }
+```
+- `excerpt`：正文里的 `<@id>` 换成 `@显示名`，连续空白压成一个空格，超过 100 个字符（按 Unicode 字符，不切坏汉字）截断并加 `…`；只有附件没有文字时为 `"[附件]"`。
+- `url` 是前端路由的相对路径（`/teams/:teamId/channels/:channelId`，`msg` 为要定位的消息 id），点击通知时 `clients.openWindow(url)` / 聚焦已有窗口后导航过去。`tag` 可直接用作 `showNotification` 的 tag。`sender.avatar_url` 是相对路径（可空）。
 
 ---
 
@@ -593,6 +692,15 @@ IP 取连接地址；只有来自本机回环的请求（即 Caddy 反代）才�
 
 见 `backend/.env.example`（全部为占位符）。关键项：`TEAMS_ENV`（`dev`/`production`，默认 production）、`TEAMS_HTTP_ADDR`（默认 `127.0.0.1:8090`）、`TEAMS_PUBLIC_BASE_URL`、`TEAMS_DATABASE_URL`、`TEAMS_SECRET_KEY`（≥32 字节随机，用于加密 webhook 密钥与签名附件 URL）、`TEAMS_UPLOAD_DIR`、`TEAMS_CORS_ORIGINS`、`TEAMS_WEBHOOK_ALLOW_INSECURE_LOCAL`。数据库迁移在启动时自动执行。
 
+浏览器推送（§9.4）：
+| 变量 | 说明 |
+|---|---|
+| `TEAMS_VAPID_PUBLIC_KEY` | VAPID 公钥（P-256，65 字节，base64url），会通过 `GET /push/vapid-public-key` 下发给浏览器 |
+| `TEAMS_VAPID_PRIVATE_KEY` | VAPID 私钥（32 字节，base64url），**机密**，只放服务器的 env 文件 |
+| `TEAMS_VAPID_SUBJECT` | 联系方式，`mailto:…` 或 `https://…` |
+
+三项都不设 = 推送关闭（服务照常启动，`enabled: false`）；只设一部分或格式不对 = 启动失败（错误信息不包含密钥）。生成方法见 deploy.md。
+
 ---
 
 ## 14. 变更记录
@@ -625,3 +733,8 @@ IP 取连接地址；只有来自本机回环的请求（即 Caddy 反代）才�
 24. 频道创建/修改仅限用户会话（bot 不可）；频道名 1–64、topic ≤250。
 25. **Webhook payload 字段顺序固定、关键字段进请求头**：顶层顺序为 `event, delivery_id, sent_at, loop_guard, sender, channel, message, reply, team, bot`，`message` 内 `content_plain` 放最后（之前按字母序输出，长消息被接收方截断时会丢掉 `sender` 和 `message.id`）；JSON 不再做 HTML 转义；message.mention 额外带 `X-TeAms-Message-Id`、`X-TeAms-Channel-Id`、`X-TeAms-Sender-Member-Id`、`X-TeAms-Sender-Type`、`X-TeAms-Trigger-Depth` 请求头。字段名和取值不变，签名仍按原始 body 计算。
 26. **Webhook payload 的 `message` 去掉 `content`（不兼容变更）**：之前正文发两份（`content` + `content_plain`），长消息体积翻倍；现在只保留 `content_plain`，@ 信息看 `message.mentions`。不做长度截断。只影响 webhook 载荷，消息接口和 WebSocket 的 `content` 不变。读 `message.content` 的接收方要改读 `content_plain`。
+27. **频道未读**（§5.7）：新增 `POST /channels/{id}/read`（只前进不后退，不传 seq = 标到最新）、`GET /me/unread`；用户会话读取频道列表 / 单个频道时，每个频道多 `last_read_seq`、`unread_count`（最多 1000）、`has_unread_mention`；新增仅本人的 WS 事件 `channel.read`。加入 team 前的消息视为已读，上线时已有成员全部视为已读；自己发的、已删除的、`bot_declined` 消息不算未读；自己发消息会推进自己的已读位置。迁移 `0004_member_profile_unread_pin.sql`。
+28. **频道置顶（按用户）**（§5.7）：新增 `PUT / DELETE /channels/{id}/pin`（幂等）；频道多 `pinned`、`pinned_at`；新增仅本人的 WS 事件 `channel.pinned`。列表顺序不变，置顶排序由前端做。
+29. **浏览器推送**（§9.4）：新增 `GET /push/vapid-public-key`、`POST / DELETE /push/subscriptions`；只在被 @ 时推送（自己 @ 自己、bot、编辑不推）；订阅绑定登录会话，退出登录即删除；404/410 自动清理。新增环境变量 `TEAMS_VAPID_PUBLIC_KEY`、`TEAMS_VAPID_PRIVATE_KEY`、`TEAMS_VAPID_SUBJECT`（§13）。迁移 `0005_push_subscriptions.sql`。
+30. **成员资料**：新增 `GET /teams/{team_id}/members/{member_id}`（含已退出成员，`deleted: true`）；Member 对象新增 `description`（bot 的描述，用户为 null）。
+31. **Bot 声明不回复**（§7.7）：新增 `POST /messages/{id}/decline`（仅 bot 令牌）；消息对象新增 `kind`（`message` / `bot_declined`）；运行状态新增终态 `declined` 和事件 `bot.run.declined`；webhook payload 的 `reply` 末尾新增 `decline` 提示（其它字段与顺序不变）；`bot_declined` 消息不能编辑。迁移 `0006_bot_decline.sql`。

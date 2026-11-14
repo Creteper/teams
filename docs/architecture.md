@@ -13,13 +13,16 @@ teams-server  (Go, 127.0.0.1:8090)
    ├─ webhook     投递队列 worker、HMAC 签名、重试、运行状态回调
    ├─ realtime    WebSocket hub（按 team 扇出 / 按主体定向）
    ├─ netguard    出站 HTTP 安全拨号（webhook 与远程头像共用）
-   └─ storage     文件存储（本地磁盘）
+   ├─ storage     文件存储（本地磁盘）
+   └─ push        （httpapi/push.go）Web Push 发送：@ 提及时异步推给浏览器推送服务
    │
    ├──► PostgreSQL（业务数据 + webhook 投递队列）
    ├──► 本地磁盘 TEAMS_UPLOAD_DIR（附件、头像）
+   ├──► 出站 HTTPS → 浏览器推送服务（FCM / Mozilla / WNS 等，endpoint 由浏览器给出）
    └──► 出站 HTTPS → Bot webhook（如 Grok Bot）
                          │
 Bot 处理后  ─────────────┘  POST /api/v1/channels/{id}/messages (Bearer <BOT_TOKEN>, reply_to=触发消息)
+                            或 POST /api/v1/messages/{id}/decline（声明不回复）
 ```
 
 单进程部署；状态全在 PostgreSQL 和上传目录里，进程可随时重启（投递队列不丢）。限流器和 WS hub 在进程内存中，因此**只支持单实例**。
@@ -29,7 +32,8 @@ Bot 处理后  ─────────────┘  POST /api/v1/channels
 ```
 backend/
 ├── cmd/teams-server/main.go      # 入口：读 .env（或 TEAMS_ENV_FILE）→ 连库 → 迁移 → worker + 清理 + HTTP，优雅退出
-├── migrations/                   # 0001_init.sql、0002_invites.sql、0003_bot_runs.sql（embed 进二进制）
+├── cmd/vapidgen/main.go          # 生成 VAPID 密钥对，只打印到终端（不写文件）
+├── migrations/                   # 0001_init … 0006_bot_decline.sql（embed 进二进制，按文件名顺序执行）
 ├── internal/
 │   ├── config/                   # 环境变量解析与校验（LoadDotEnv、FromLookup）
 │   ├── db/                       # pgxpool、迁移执行器（schema_migrations + advisory lock）
@@ -44,13 +48,14 @@ backend/
 │   ├── realtime/                 # Hub / Client / Event
 │   ├── webhook/                  # Sign/Verify、Send、Worker、RunReason
 │   └── httpapi/                  # server.go（中间件、鉴权模式）、views.go（JSON 视图与查询）、
-│                                 # teams.go、invites.go、messages.go、uploads.go、bots.go、botruns.go、ws.go、routes.go
+│                                 # teams.go、invites.go、messages.go、uploads.go、bots.go、botruns.go、ws.go、routes.go、
+│                                 # channelstate.go（未读/置顶）、push.go（Web Push）、decline.go（bot 声明不回复）
 │                                 # *_test.go：集成测试（teams_test 库）
 ├── .env.example                  # 配置模板（只有占位符）
 └── go.mod
 ```
 
-依赖：`jackc/pgx/v5`、`coder/websocket`、`google/uuid`（UUIDv7）、`golang.org/x/crypto`（argon2id）、`golang.org/x/image`（webp 尺寸）。路由用标准库 `net/http` 方法+路径模式。
+依赖：`jackc/pgx/v5`、`coder/websocket`、`google/uuid`（UUIDv7）、`golang.org/x/crypto`（argon2id）、`golang.org/x/image`（webp 尺寸）、`SherClockHolmes/webpush-go`（Web Push 加密与 VAPID 签名）。路由用标准库 `net/http` 方法+路径模式。
 
 ## 3. 数据表
 
@@ -60,15 +65,17 @@ backend/
 | `sessions` | token_hash, user_id, expires_at, last_used_at | 只存令牌 SHA-256；滑动续期 |
 | `avatars` | id, owner_kind, owner_id, mime_type, sha256, storage_key, source_url | 用户头像、team 图标、bot 头像共用；不可变，换图即新行 |
 | `teams` | id, name, description, icon_avatar_id, owner_user_id, deleted_at | |
-| `team_members` | id(=member_id), team_id, type(user/bot), user_id / bot_id, role, left_at | 统一成员身份；(team,user) 在职唯一 |
+| `team_members` | id(=member_id), team_id, type(user/bot), user_id / bot_id, role, left_at, **join_seq** | 统一成员身份；(team,user) 在职唯一；`join_seq` 由 BEFORE INSERT 触发器写入加入时的最大消息 seq（加入前的消息视为已读） |
 | `bots` | id, team_id, member_id, name, display_name, description, avatar_id, avatar_source_url, avatar_shape, avatar_color, token_hash, deleted_at | 样式字段原样存储 |
 | `bot_webhooks` | bot_id, url, enabled, secret_header_name, secret_header_value_enc, signing_secret_enc | 密钥 AES-GCM 加密 |
 | `channels` | id, team_id, name(team 内唯一), topic, is_default, deleted_at | |
-| `messages` | id, seq(identity), team_id, channel_id, sender_member_id, content, reply_to, trigger_depth, client_msg_id, edited_at, deleted_at | 索引 (channel_id, seq)；(sender, channel, client_msg_id) 非唯一索引 + 24h 窗口查重 |
+| `messages` | id, seq(identity), **kind**(message/bot_declined), team_id, channel_id, sender_member_id, content, reply_to, trigger_depth, client_msg_id, edited_at, deleted_at | 索引 (channel_id, seq)；(sender, channel, client_msg_id) 非唯一索引 + 24h 窗口查重 |
 | `message_mentions` | message_id, member_id, position | |
 | `attachments` | id, team_id, uploader_member_id, message_id(可空), kind, mime_type, size_bytes, storage_key, sha256, width, height | 未引用 24h 后清理 |
 | `team_invites` | id, team_id, code(唯一, 10 位 base62), expires_at, max_uses, uses, revoked_at, created_by | |
-| `webhook_deliveries` | id, bot_id, message_id, channel_id, event, status, attempts, next_attempt_at, last_status_code, last_error, **run_status, run_reason, reply_message_id, run_updated_at** | 投递队列 + 投递日志 + bot 运行状态；保留 7 天 |
+| `webhook_deliveries` | id, bot_id, message_id, channel_id, event, status, attempts, next_attempt_at, last_status_code, last_error, **run_status, run_reason, reply_message_id, run_updated_at** | 投递队列 + 投递日志 + bot 运行状态（run_status 含 `declined`）；保留 7 天 |
+| `user_channel_state` | (user_id, channel_id), last_read_seq, pinned_at, updated_at | 按用户的已读位置与置顶；跨设备同步 |
+| `push_subscriptions` | id, user_id, session_id(会话删除即级联删除), endpoint(唯一), p256dh, auth, last_success_at, last_error | 浏览器推送订阅，每用户最多 20 个 |
 
 ## 4. 配置（环境变量）
 
@@ -92,6 +99,7 @@ backend/
 | `TEAMS_WEBHOOK_TIMEOUT` / `TEAMS_WEBHOOK_WORKERS` | 10s / 4 | |
 | `TEAMS_AUTH_RATE_PER_MINUTE` / `TEAMS_INVITE_PREVIEW_RATE_PER_MINUTE` | 20 / 30 | 每 IP |
 | `TEAMS_LOG_LEVEL` | `info` | |
+| `TEAMS_VAPID_PUBLIC_KEY` / `TEAMS_VAPID_PRIVATE_KEY` / `TEAMS_VAPID_SUBJECT` | 空（推送关闭） | Web Push；三项须同时设置，私钥机密，用 `go run ./cmd/vapidgen` 生成 |
 
 端口：用户 Mac 上 3000 是 zhw AI 客服、5173 等已占用，后端选 **8090**；前端开发端口 **5190**。
 
@@ -113,7 +121,11 @@ backend/
 5. 若发送者是 bot 且带 `reply_to`：把该 bot 由触发消息产生的运行标记为 `completed`。
 6. 为被 @ 的 bot 写投递记录（防循环、限流、无 webhook → `failed/no_webhook`）。
 
-提交后：推送 `message.created`、`bot.run.completed`、`bot.run.started` / `bot.run.failed(no_webhook)`，唤醒 worker。
+提交后：推送 `message.created`、`bot.run.completed`、`bot.run.started` / `bot.run.failed(no_webhook)`，唤醒 worker；用户发送时把自己的已读位置推进到这条消息并给自己推 `channel.read`；有 @ 用户时异步发浏览器推送（§7.1）。
+
+### 6.2 未读计数
+
+一条 SQL（`channelStateSQL`）算出用户在一个 team（或单个频道、或全部 team）每个频道的状态：有效已读位置 `eff = max(user_channel_state.last_read_seq, team_members.join_seq)`；`unread_count` 为 `seq > eff`、未删除、`kind='message'`、非本人发送的消息数，用 `LIMIT 1000` 子查询封顶（走 `(channel_id, seq)` 索引，只扫未读部分）；`has_unread_mention` 从 `message_mentions(member_id)` 索引出发做 EXISTS。选 `join_seq`（触发器写入）而不是"加入时给每个频道插已读行"，是因为成员加入有多个入口（建 team、按用户名添加、邀请），触发器一处覆盖；也不用 `created_at <= joined_at` 现算，因为那需要每次倒扫加入后的全部消息。
 
 ### 6.1 seq 与提交顺序
 
@@ -141,6 +153,14 @@ SELECT 1 FROM channels WHERE id = $1 AND deleted_at IS NULL FOR UPDATE;
 - 加入 team：`SetTeam(主体, team, true)` 后给本人发 `team.joined`；其他人收 `member.joined`。移出/退出：先取消订阅，再给 team 发 `member.left`、给本人发 `team.removed`。
 - 每个连接有 256 帧发送缓冲，满了即踢掉（客户端重连后按 seq 补拉）。
 - 无 presence / typing。
+- 个人事件 `channel.read` / `channel.pinned` 用 `PublishPrincipal("user:<id>")` 只发给本人的所有连接（多设备同步）。
+
+### 7.1 浏览器推送（Web Push）
+
+- 发消息提交后，若 mentions 里有用户成员（排除发送者自己），起一个 goroutine：查这些用户的订阅 → 生成 payload（team/频道/发送人/摘要/跳转 url）→ 每个订阅用 webpush-go 加密（RFC 8291）并带 VAPID JWT（RFC 8292）POST 到 endpoint。全局并发上限 8，单次 10 秒超时，TTL 24 小时，不重试。
+- 出站客户端与 webhook 同一套 `netguard` 策略（连接时校验 IP、不走代理、不跟随重定向）；订阅时 endpoint 也做同样的 URL 校验。
+- 404/410 → 删除订阅；其它失败只写 `last_error` 和日志（只记订阅 id 与 endpoint 域名）。
+- 订阅绑定登录会话（`session_id` 外键级联），退出登录或会话过期时一并删除。
 
 ## 8. 文件存储
 
@@ -172,7 +192,9 @@ SELECT 1 FROM channels WHERE id = $1 AND deleted_at IS NULL FOR UPDATE;
             │                 ▲
             ├─可重试失败─► retrying ─┘(重试成功)
             └─最终失败 / 无 webhook ─► failed
-任意非 completed 状态 ──bot 回复──► completed（completed 之后不再被覆盖）
+任意非终态 ──bot 回复──► completed
+任意非终态 ──bot 调 /messages/{id}/decline──► declined（插入 kind=bot_declined 的提示消息，reply_message_id 指向它）
+completed / declined 是终态，之后不再被覆盖（worker 的 setRun 与 completeRuns 都跳过终态）
 ```
 
 每次状态变化通过 worker 的 `Notify` 回调推送 `bot.run.*` 给整个 team。`GET /channels/{id}/bot-runs?active=true` 读 started/delivered/retrying 且 10 分钟内的行。
@@ -195,5 +217,5 @@ SELECT 1 FROM channels WHERE id = $1 AND deleted_at IS NULL FOR UPDATE;
 ## 13. 测试
 
 - 单元测试：mention、netguard、webhook 签名/分类、secretbox、media 嗅探、ratelimit、auth、config、storage、realtime、样式字段规范化、trigger_depth、邀请码。
-- 集成测试（`internal/httpapi`）：`TestMain` 重建 `teams_test` 的 public schema 并迁移；`httptest` 起完整路由，本地 `httptest.Server` 当 webhook 接收器（`AllowInsecureLocal` 仅测试中打开）。覆盖注册→team→频道→消息分页→WS 事件→@bot→验签→bot 回复→深度/限流跳过→重试/失败→bot 运行事件→邀请（含并发）→team 修改/退出→附件签名刷新→bot 资料与头像。
+- 集成测试（`internal/httpapi`）：未读/已读/置顶与 `channel.read`/`channel.pinned`、成员资料、Web Push（测试里模拟浏览器生成 ECDH 密钥，按 RFC 8291 解密校验 payload；覆盖被 @、自己 @ 自己、未 @、410/404 删除订阅、退出登录删订阅）、bot 声明不回复；`TestMain` 重建 `teams_test` 的 public schema 并迁移；`httptest` 起完整路由，本地 `httptest.Server` 当 webhook 接收器（`AllowInsecureLocal` 仅测试中打开）。覆盖注册→team→频道→消息分页→WS 事件→@bot→验签→bot 回复→深度/限流跳过→重试/失败→bot 运行事件→邀请（含并发）→team 修改/退出→附件签名刷新→bot 资料与头像。
 - 命令：`go vet ./...`、`go build ./...`、`go test -race ./...`（需要 `TEAMS_TEST_DATABASE_URL`，从 `backend/.env` 读取）。
