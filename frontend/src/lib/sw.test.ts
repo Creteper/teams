@@ -45,7 +45,7 @@ describe("Service Worker（public/sw.js）", () => {
       body: "@Alice 看一下",
       tag: "mention:m1",
       icon: "/api/v1/avatars/a",
-      badge: "/icon-192.png",
+      badge: "/icons/icon-192.png",
       data: { url: "/teams/t1/channels/c1?msg=m1" },
     });
   });

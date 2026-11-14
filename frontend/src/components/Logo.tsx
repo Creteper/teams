@@ -1,7 +1,20 @@
-/** TeAms LOGO（public/logo.svg）；小于 40px 时用简化版 favicon.svg，小尺寸更清楚 */
+/**
+ * TeAms LOGO（E 版：黑底两张拟态脸）。图标文件在 public/icons/（由仓库外 teams-assets/logo/make-icons.py 生成）。
+ * 源图是带圆角的黑色方块、四角纯黑：显示时按圆角裁掉，深色界面上不露黑色直角。
+ */
 export function Logo({ size = 48, className = "" }: { size?: number; className?: string }) {
-  const src = size < 40 ? "/favicon.svg" : "/logo.svg";
-  return <img src={src} width={size} height={size} alt="TeAms" className={`select-none ${className}`} draggable={false} />;
+  const src = size * 2 <= 192 ? "/icons/icon-192.png" : "/icons/icon-512.png";
+  return (
+    <img
+      src={src}
+      width={size}
+      height={size}
+      alt="TeAms"
+      data-testid="teams-logo"
+      className={`rounded-[23%] select-none ${className}`}
+      draggable={false}
+    />
+  );
 }
 
 /** LOGO + 文字标 */

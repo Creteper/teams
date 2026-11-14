@@ -12,8 +12,8 @@ function notificationFromPayload(p) {
     options: {
       body: (p && p.message && p.message.excerpt) || "",
       tag: (p && p.tag) || undefined,
-      icon: (p && p.sender && p.sender.avatar_url) || "/icon-192.png",
-      badge: "/icon-192.png",
+      icon: (p && p.sender && p.sender.avatar_url) || "/icons/icon-192.png",
+      badge: "/icons/icon-192.png",
       data: { url: (p && p.url) || "/teams" },
     },
   };
