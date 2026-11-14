@@ -1,6 +1,6 @@
 # TeAms 公网部署方案
 
-> **已选方案 B：阿里云服务器 + Caddy**。服务器 IP `123.57.134.175`，域名 `teams.lovekaifa.com`。
+> **已选方案 B：阿里云服务器 + 反向代理**。服务器上已有 nginx 1.18 承载 lovekaifa.com 等站点（80/443 已占用），因此**推荐 B.7a：在现有 nginx 里加 teams 站点**；B.7b（Caddy）只适用于 80/443 空闲的机器。最终用哪种由用户决定。服务器 IP `123.57.134.175`，域名 `teams.lovekaifa.com`。
 > 本文是操作手册，**尚未实施**：本阶段没有连接服务器、没有部署、没有开放任何端口。
 > 文中所有口令、令牌、密钥一律是占位符（`<DB_PASSWORD>`、`<TEAMS_SECRET_KEY>` 等），真实值只在部署时生成并写入服务器上的 `/etc/teams/teams.env`，**不进仓库、不进文档、不进聊天记录**。
 
@@ -16,7 +16,7 @@
 
 ## ⚠️ 上线前必读
 
-> **1. ICP 备案是前置条件。** `123.57.134.175` 属于阿里云中国大陆（北京）数据中心。大陆服务器上的域名在**完成 ICP 备案之前**，80/443 的 HTTP(S) 访问会被拦截（显示未备案提示页），Let's Encrypt 的 HTTP 验证也会失败，证书签不下来。
+> **1. ICP 备案是前置条件**（当前状态：`lovekaifa.com` 已备案，`teams` 子域已解析到本机）。 `123.57.134.175` 属于阿里云中国大陆（北京）数据中心。大陆服务器上的域名在**完成 ICP 备案之前**，80/443 的 HTTP(S) 访问会被拦截（显示未备案提示页），Let's Encrypt 的 HTTP 验证也会失败，证书签不下来。
 > - 在阿里云「ICP 代备案管理系统」为 `lovekaifa.com` 提交备案（主体信息、域名实名、服务器绑定该 ECS 实例），审核一般 1–3 周。
 > - 备案通过、网站上线后 **30 天内**在「全国互联网安全管理服务平台」完成公安联网备案，并在页面底部展示 ICP 备案号（前端页脚，由 Tina 加）。
 > - 备案完成前**不要**把 DNS 指过去对外试用；如需提前联调，用下面的备选 C（ngrok，仅临时）。
@@ -25,14 +25,14 @@
 >
 > | 端口 | 来源 | 说明 |
 > |---|---|---|
-> | 80/tcp | 0.0.0.0/0 | HTTP（Caddy 自动跳转 HTTPS、ACME 验证） |
+> | 80/tcp | 0.0.0.0/0 | HTTP（跳转 HTTPS、Let's Encrypt 验证） |
 > | 443/tcp | 0.0.0.0/0 | HTTPS + WSS |
 > | 443/udp | 0.0.0.0/0 | 可选，HTTP/3 |
 > | 22/tcp | **仅运维人员的固定 IP**（如 `<ADMIN_IP>/32`） | SSH；不要对 0.0.0.0/0 开放 |
 > | **5432** | **不开放** | PostgreSQL 只监听 127.0.0.1 |
-> | **8090** | **不开放** | 后端只监听 127.0.0.1，只由 Caddy 访问 |
+> | **8090** | **不开放** | 后端只监听 127.0.0.1，只由本机反向代理访问 |
 >
-> 系统内再开 `ufw`（只放行 22/80/443）做第二道防线。
+> 系统内的 `ufw` 是第二道防线。**本服务器目前未启用 ufw，且跑着与 TeAms 无关的站点和服务；是否启用由用户决定**（见 B.3）。启用前必须先放行 22，避免把自己锁在外面。
 >
 > **3. 生产配置必须是：** `TEAMS_ENV=production`，`TEAMS_PUBLIC_BASE_URL=https://teams.lovekaifa.com`，`TEAMS_CORS_ORIGINS=https://teams.lovekaifa.com`（同时是 WebSocket Origin 白名单），`TEAMS_WEBHOOK_ALLOW_INSECURE_LOCAL=false`。
 >
@@ -40,7 +40,7 @@
 
 ---
 
-## 方案 B（已选）：阿里云 ECS + Caddy
+## 方案 B（已选）：阿里云 ECS + nginx（现有）
 
 ### B.1 拓扑
 
@@ -48,15 +48,17 @@
 浏览器 / Grok Bot
    │ https://teams.lovekaifa.com   (443, Let's Encrypt 证书)
    ▼
-Caddy (systemd: caddy)
-   ├─ /api/*        → reverse_proxy 127.0.0.1:8090   （含 WebSocket /api/v1/ws）
+nginx（现有，systemd: nginx；或 Caddy，见 B.7b）
+   ├─ /api/*        → 反代 127.0.0.1:8090   （含 WebSocket /api/v1/ws）
    └─ 其它路径      → /srv/teams/frontend（静态文件，SPA 回退 index.html）
 teams-server (systemd: teams，用户 teams，127.0.0.1:8090)
    ├─ PostgreSQL 18 (127.0.0.1:5432，库 teams，角色 teams_app)
    └─ /var/lib/teams/uploads（附件、头像）
 ```
 
-假设系统为 **Ubuntu 24.04 LTS x86_64**（如是 Alibaba Cloud Linux，把 apt 换成 dnf，其余相同）。建议规格 ≥ 2 vCPU / 2 GB 内存 / 40 GB 云盘；上传多的话单独挂一块数据盘到 `/var/lib/teams`。
+目标服务器已核实为 **Ubuntu 22.04.4 LTS（jammy）x86_64**，内存 1.6 GB + 2 GB Swap，并已运行 nginx、MySQL、Redis 和两个 Node 应用。下文命令按 jammy 编写。内存低于建议的 2 GB，PostgreSQL 使用 B.4 的小内存配置。上传多的话单独挂一块数据盘到 `/var/lib/teams`。
+
+> **共用服务器原则**：不改动、不重启与 TeAms 无关的服务（MySQL、Redis、Node 应用、其它 nginx 站点）；对 nginx 只做"新增一个站点文件 + `nginx -t` 通过后 reload"。
 
 ### B.2 DNS
 
@@ -72,18 +74,19 @@ teams-server (systemd: teams，用户 teams，127.0.0.1:8090)
 
 ```bash
 # 以有 sudo 权限的运维账号登录（凭据见"上线前必读 4"）
-sudo apt update && sudo apt -y upgrade
-sudo apt -y install ufw curl ca-certificates gnupg unattended-upgrades
+sudo apt update   # 共用服务器：不做整机 apt upgrade，避免连带升级 nginx/MySQL 等；安全更新交给 unattended-upgrades
+sudo apt -y install curl ca-certificates gnupg unattended-upgrades
 sudo timedatectl set-timezone Asia/Shanghai
 
-# SSH：只用密钥，禁止 root 密码登录
-sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/; s/^#\?PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
-sudo systemctl reload ssh
+# SSH：只用密钥，禁止 root 密码登录 —— 【需用户同意后再执行】先确认部署密钥能登录
+# sudo sed -i 's/^#\?PasswordAuthentication .*/PasswordAuthentication no/; s/^#\?PermitRootLogin .*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+# sudo systemctl reload ssh
 
-# 防火墙
-sudo ufw default deny incoming && sudo ufw default allow outgoing
-sudo ufw allow 22/tcp && sudo ufw allow 80/tcp && sudo ufw allow 443/tcp && sudo ufw allow 443/udp
-sudo ufw enable
+# 防火墙 —— 【需用户同意后再执行】本机已有其它站点，当前未启用 ufw，只靠安全组。
+# 如用户同意启用：先放行 22，再放行 80/443，最后 enable；启用前确认其它服务没有依赖别的对外端口（ss -ltnp）。
+# sudo ufw allow 22/tcp && sudo ufw allow 80/tcp && sudo ufw allow 443/tcp
+# sudo ufw default deny incoming && sudo ufw default allow outgoing
+# sudo ufw enable && sudo ufw status verbose
 
 # 专用系统用户与目录
 sudo useradd --system --home-dir /var/lib/teams --shell /usr/sbin/nologin teams
@@ -100,7 +103,7 @@ sudo install -d -o root  -g root  -m 700 /var/backups/teams
 # PGDG 官方源（国内可换成 mirrors.aliyun.com/postgresql 镜像）
 sudo install -d /usr/share/postgresql-common/pgdg
 sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
-echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt noble-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt jammy-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
 sudo apt update && sudo apt -y install postgresql-18
 ```
 
@@ -127,6 +130,18 @@ SQL
 sudo systemctl restart postgresql && sudo ss -ltnp | grep 5432   # 只应看到 127.0.0.1 / ::1
 ```
 表结构由后端启动时自动迁移，无需手工建表。
+
+小内存配置（本机 1.6 GB 且与 MySQL/Redis/Node 共用），写入 `/etc/postgresql/18/main/conf.d/teams-small.conf` 后 `sudo systemctl restart postgresql`：
+```
+shared_buffers = 128MB
+effective_cache_size = 384MB
+work_mem = 4MB
+maintenance_work_mem = 64MB
+max_connections = 30          # 后端连接池默认 max(4, CPU 数)，30 足够
+wal_buffers = 4MB
+max_wal_size = 512MB
+```
+上线后用 `free -m` 观察；Swap 持续增长时优先考虑升级到 2 GB 以上内存。
 
 ### B.5 后端：配置文件
 
@@ -218,7 +233,145 @@ WantedBy=multi-user.target
 sudo systemctl daemon-reload && sudo systemctl enable teams
 ```
 
-### B.7 Caddy
+### B.7 反向代理与 HTTPS
+
+二选一：**本服务器 80/443 已被 nginx 占用，用 B.7a**；B.7b 只用于 80/443 空闲的新机器。
+
+#### B.7a nginx（在现有 nginx 中新增站点，推荐）
+
+只新增文件，不修改现有站点。先确认现有布局（是否用 `sites-enabled`、现有站点是否监听 IPv6、是否已有 certbot）：
+```bash
+nginx -v; ls /etc/nginx/sites-enabled /etc/nginx/conf.d; which certbot
+grep -rn "listen" /etc/nginx/sites-enabled | head      # 参照现有站点的 listen 写法；没有 [::] 就删掉下文的 IPv6 listen
+sudo nginx -t                                          # 改动前先确认现有配置本身是好的
+```
+
+1）公共片段 `/etc/nginx/snippets/teams-security-headers.conf`（nginx 的 `add_header` 在 location 里写了就不继承 server 级的，所以每个 location 都 include 一次）：
+```nginx
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header X-Frame-Options "DENY" always;
+```
+
+2）WebSocket 映射 `/etc/nginx/conf.d/teams-ws-map.conf`（变量名带 `teams_` 前缀，避免和已有的 `$connection_upgrade` 重名冲突）：
+```nginx
+map $http_upgrade $teams_connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+```
+
+3）先签证书。先放一个只有 80 的站点用于验证：
+```bash
+sudo install -d -m 755 /var/www/certbot
+sudo tee /etc/nginx/sites-available/teams.lovekaifa.com >/dev/null <<'NGINX'
+server {
+    listen 80;
+    listen [::]:80;
+    server_name teams.lovekaifa.com;
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+    location / { return 404; }
+}
+NGINX
+sudo ln -s /etc/nginx/sites-available/teams.lovekaifa.com /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot certonly --webroot -w /var/www/certbot -d teams.lovekaifa.com \
+     --deploy-hook "systemctl reload nginx"           # 只签 teams 这一张，不动其它证书；续期走已有的 certbot.timer
+sudo certbot renew --dry-run --cert-name teams.lovekaifa.com
+```
+
+4）证书到手后，把站点文件换成完整版 `/etc/nginx/sites-available/teams.lovekaifa.com`：
+```nginx
+server {
+    listen 80;
+    listen [::]:80;
+    server_name teams.lovekaifa.com;
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+    location / { return 301 https://$host$request_uri; }
+}
+
+server {
+    listen 443 ssl http2;            # nginx 1.18 的 http2 写在 listen 上
+    listen [::]:443 ssl http2;
+    server_name teams.lovekaifa.com;
+
+    ssl_certificate     /etc/letsencrypt/live/teams.lovekaifa.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/teams.lovekaifa.com/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;     # 若不存在，改为 ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;       # 若不存在，删掉这行
+
+    server_tokens off;
+    access_log /var/log/nginx/teams-access.log;          # 系统 logrotate 已覆盖 /var/log/nginx/*.log
+    error_log  /var/log/nginx/teams-error.log;
+
+    gzip on;
+    gzip_types text/css application/javascript application/json image/svg+xml;
+
+    # —— 后端公共代理头 ——
+    # 后端只信任来自 127.0.0.1 的 X-Forwarded-For，且取第一个值：这里必须"覆盖"成 $remote_addr，
+    # 不能用 $proxy_add_x_forwarded_for（会保留客户端伪造的值）；同时清掉 CF-Connecting-IP。
+    set $teams_backend http://127.0.0.1:8090;
+
+    # WebSocket：长连接，客户端每 60 秒内会发 ping
+    location = /api/v1/ws {
+        include /etc/nginx/snippets/teams-security-headers.conf;
+        proxy_pass $teams_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header CF-Connecting-IP "";
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $teams_connection_upgrade;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+        proxy_buffering off;
+    }
+
+    # REST API + 上传
+    location /api/ {
+        include /etc/nginx/snippets/teams-security-headers.conf;
+        client_max_body_size 110m;       # 视频上限 100MB + multipart 开销
+        proxy_request_buffering off;     # 大文件直接流给后端，不先落到 nginx 临时目录
+        proxy_buffering off;
+        proxy_pass $teams_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header CF-Connecting-IP "";
+        proxy_set_header Connection "";
+        proxy_read_timeout 10m;
+        proxy_send_timeout 10m;
+    }
+
+    # 前端静态文件（SPA：/invite/<code> 等前端路由回退到 index.html）
+    root /srv/teams/frontend/current;
+
+    location /assets/ {
+        include /etc/nginx/snippets/teams-security-headers.conf;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+        try_files $uri =404;
+    }
+
+    location / {
+        include /etc/nginx/snippets/teams-security-headers.conf;
+        add_header Cache-Control "no-cache" always;
+        try_files $uri $uri/ /index.html;
+    }
+}
+```
+```bash
+sudo nginx -t && sudo systemctl reload nginx     # 只 reload，不 restart；-t 不通过就不要 reload
+curl -fsS https://teams.lovekaifa.com/api/v1/healthz
+curl -sI http://lovekaifa.com | head -1          # 顺手确认现有站点不受影响
+```
+回滚：`sudo rm /etc/nginx/sites-enabled/teams.lovekaifa.com && sudo nginx -t && sudo systemctl reload nginx`。
+
+> 说明：`proxy_pass` 用变量时 nginx 不会改写 URI，路径原样转给后端（正是需要的）；不要在 `proxy_pass` 末尾加 `/`。
+
+#### B.7b Caddy（仅适用于 80/443 空闲的机器）
 
 安装（官方 apt 源；国内慢时可从 GitHub Releases 下载 `caddy_<ver>_linux_amd64.deb` 后 `dpkg -i`）：
 ```bash
@@ -288,13 +441,13 @@ http://123.57.134.175, https://123.57.134.175 {
 sudo install -d -o caddy -g caddy /var/log/caddy
 sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy
 ```
-证书由 Caddy 自动向 Let's Encrypt 申请和续期（需 80/443 可达且**已备案**）。
+证书由 Caddy 自动向 Let's Encrypt 申请和续期（需 80/443 可达且**已备案**）。**本服务器不适用**：80/443 已被现有 nginx 占用，装 Caddy 会冲突。
 
 ### B.8 前端
 
 前端在开发机构建（由 Tina 负责前端代码；API 使用同域相对路径 `/api/v1`，WS 用 `wss://<当前域名>/api/v1/ws`）：
 ```bash
-cd frontend && npm ci && npm run build        # 产物 dist/
+cd frontend && pnpm install --frozen-lockfile && pnpm build   # 产物 dist/；只用 Tina 在群里报的可部署 commit 构建
 tar -C dist -czf ../teams-frontend-$(git rev-parse --short HEAD).tar.gz .
 ```
 
@@ -327,7 +480,7 @@ scp teams-frontend-<VERSION>.tar.gz <SSH_USER>@123.57.134.175:/tmp/
 sudo install -d /srv/teams/frontend/releases/<VERSION>
 sudo tar -C /srv/teams/frontend/releases/<VERSION> -xzf /tmp/teams-frontend-<VERSION>.tar.gz
 sudo ln -sfn /srv/teams/frontend/releases/<VERSION> /srv/teams/frontend/current
-# 无需重启 Caddy；index.html no-cache，assets 带 hash 长缓存
+# 无需 reload nginx/Caddy；index.html no-cache，assets 带 hash 长缓存
 ```
 前后端接口有不兼容变更时：先发后端（保持向后兼容），再发前端。
 
@@ -393,8 +546,9 @@ sudo -u postgres dropdb teams_restore_test
 
 - [ ] ICP 备案已通过，域名已绑定该 ECS；计划 30 天内完成公安备案、页脚展示备案号。
 - [ ] DNS `teams.lovekaifa.com A 123.57.134.175` 生效。
-- [ ] 安全组：80/443 对外；22 仅运维 IP；**5432、8090 未开放**。`ufw status` 一致。
-- [ ] `ss -ltnp`：8090 与 5432 只在 127.0.0.1 / ::1 上监听；对外只有 Caddy 的 80/443。
+- [ ] 安全组：80/443 对外；22 仅运维 IP；**5432、8090 未开放**。若用户同意启用了 ufw，`ufw status` 一致。
+- [ ] 现有站点（lovekaifa.com、ry.lovekaifa.com 等）访问正常，`sudo nginx -t` 无告警。
+- [ ] `ss -ltnp`：8090 与 5432 只在 127.0.0.1 / ::1 上监听；对外只有 nginx 的 80/443（以及本机原有服务自己的端口）。
 - [ ] 从外网 `curl -m 5 http://123.57.134.175:8090/` 与 `:5432` 连接失败。
 - [ ] `/etc/teams/teams.env` 权限 600；`TEAMS_ENV=production`、`TEAMS_WEBHOOK_ALLOW_INSECURE_LOCAL=false`、`TEAMS_CORS_ORIGINS=https://teams.lovekaifa.com`、`TEAMS_PUBLIC_BASE_URL=https://teams.lovekaifa.com`。
 - [ ] `TEAMS_SECRET_KEY`、数据库口令为现场随机生成并已离线保存；仓库中 `git grep` 不到任何真实密钥。
@@ -402,8 +556,8 @@ sudo -u postgres dropdb teams_restore_test
 - [ ] 浏览器：注册/登录、建 team、发消息、上传图片和视频（接近 100MB）、WebSocket 实时收到消息、刷新 `/invite/<code>` 页面不 404。
 - [ ] 配置一个测试 bot，webhook 指向 Grok Bot 的 HTTPS 地址，`POST /bots/{id}/webhook/test` 返回 ok；@bot 后频道出现 `bot.run.*` 状态与回复。
 - [ ] 备份 timer 已启用，手动跑一次 `teams-backup.sh`，OSS 中可见文件；做一次恢复演练。
-- [ ] SSH 改为仅密钥登录，部署用的临时口令已作废/轮换。
-- [ ] `unattended-upgrades` 开启安全更新；`journalctl -u teams`、Caddy 访问日志有轮转。
+- [ ] （用户决定后）SSH 改为仅密钥登录，部署用的口令已轮换。
+- [ ] `unattended-upgrades` 开启安全更新；`journalctl -u teams`、`/var/log/nginx/teams-*.log` 有轮转。
 
 ### B.12 运维速查
 
@@ -411,7 +565,8 @@ sudo -u postgres dropdb teams_restore_test
 |---|---|
 | 看后端日志 | `journalctl -u teams -f` |
 | 重启后端 | `sudo systemctl restart teams` |
-| Caddy 配置重载 | `sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy` |
+| nginx 配置重载 | `sudo nginx -t && sudo systemctl reload nginx` |
+| 证书续期检查 | `sudo certbot renew --dry-run --cert-name teams.lovekaifa.com` |
 | 数据库控制台 | `sudo -u postgres psql teams` |
 | 磁盘占用 | `du -sh /var/lib/teams/uploads /var/backups/teams` |
 
@@ -456,7 +611,7 @@ sudo -u postgres dropdb teams_restore_test
 
 ### 对比
 
-| | B 阿里云 ECS + Caddy（已选） | A Cloudflare Tunnel | C ngrok |
+| | B 阿里云 ECS + nginx/Caddy（已选） | A Cloudflare Tunnel | C ngrok |
 |---|---|---|---|
 | 月成本 | ECS 费用 + 域名 | ≈0（域名另计） | 0 / $8+ |
 | 依赖 Mac 在线 | 否 | 是 | 是 |
