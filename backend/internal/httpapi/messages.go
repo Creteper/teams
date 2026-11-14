@@ -536,7 +536,7 @@ func (s *Server) payloadBot(b *botView) payloadBot {
 }
 
 // Webhook payload types. Field order is part of the contract: identifiers
-// and routing data come first and long text (content_plain, content) last,
+// and routing data come first and the long text (content_plain) last,
 // so receivers that truncate long bodies still see who sent what.
 type payloadTeam struct {
 	ID      string  `json:"id"`
@@ -595,7 +595,6 @@ type payloadMessage struct {
 	Mentions     []mentionView       `json:"mentions"`
 	Attachments  []payloadAttachment `json:"attachments"`
 	ContentPlain string              `json:"content_plain"`
-	Content      string              `json:"content"`
 }
 
 type payloadReplyHint struct {
@@ -684,7 +683,7 @@ func (s *Server) buildDeliveryPayload(ctx context.Context, d webhook.Delivery) (
 			DisplayName: sm.DisplayName, AvatarURL: s.abs(sm.AvatarURL), AvatarShape: sm.AvatarShape, AvatarColor: sm.AvatarColor},
 		Channel: payloadChannel{ID: ch.ID, Name: ch.Name},
 		Message: payloadMessage{ID: m.ID, Seq: m.Seq, ReplyTo: m.ReplyTo, TriggerDepth: m.TriggerDepth, CreatedAt: m.CreatedAt,
-			Mentions: mentions, Attachments: atts, ContentPlain: mention.Plain(m.Content, names), Content: m.Content},
+			Mentions: mentions, Attachments: atts, ContentPlain: mention.Plain(m.Content, names)},
 		Reply: payloadReply{Method: "POST", URL: s.cfg.PublicBaseURL + "/api/v1/channels/" + ch.ID + "/messages",
 			Auth: "Authorization: Bearer <BOT_TOKEN>", BodyHint: payloadReplyHint{Content: "<@" + sm.ID + "> …", ReplyTo: m.ID}},
 		Team: team,

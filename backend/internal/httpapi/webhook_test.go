@@ -119,8 +119,12 @@ func TestWebhookDeliveryAndSignature(t *testing.T) {
 	if mi, ci := strings.Index(body, `"id":"`+msg["id"].(string)+`"`), strings.Index(body, `"content_plain"`); mi < 0 || mi > ci {
 		t.Fatalf("message.id must precede content: %s", body)
 	}
-	if strings.Contains(body, `\u003c`) || !strings.Contains(body, `"content":"<@`+b.MemberID+`> summarize"`) {
+	if strings.Contains(body, `\u003c`) || !strings.Contains(body, `"body_hint":{"content":"<@`+tm.MemberID+`> …"`) {
 		t.Fatalf("html escaped: %s", body)
+	}
+	// only content_plain is sent; raw content is dropped (mentions carry @ info)
+	if _, ok := pm["content"]; ok || len(pm["mentions"].([]any)) != 1 || !strings.Contains(body, `"content_plain":"@Bot summarize"},"reply":`) {
+		t.Fatalf("message content fields: %v", pm)
 	}
 	// bot replies with its token, mentioning the user
 	reply := e.send(b.Token, tm.GeneralID, map[string]any{"content": "<@" + tm.MemberID + "> done", "reply_to": msg["id"]})

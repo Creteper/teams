@@ -352,7 +352,9 @@ X-TeAms-Trigger-Depth: <message.trigger_depth>
 
 签名：`hex(HMAC-SHA256(signing_secret, timestamp + "." + raw_body))`。接收方应校验签名并拒绝时间戳偏差 > 5 分钟的请求。
 
-Payload（**发送时**根据最新数据生成；消息在发送前被删除则该投递放弃）。**字段顺序固定**，如下所示：标识和路由信息在前，长文本（`content_plain`、`content`）在 `message` 的最后，接收方即使截断请求体也能先拿到 `event`、`delivery_id`、`loop_guard`、`sender`、`channel` 和 `message.id`。JSON 不做 HTML 转义（`<@id>` 原样输出，不会变成 `\u003c@id\u003e`）。
+Payload（**发送时**根据最新数据生成；消息在发送前被删除则该投递放弃）。**字段顺序固定**，如下所示：标识和路由信息在前，长文本 `content_plain` 在 `message` 的最后，接收方即使截断请求体也能先拿到 `event`、`delivery_id`、`loop_guard`、`sender`、`channel` 和 `message.id`。JSON 不做 HTML 转义（`<@id>` 原样输出，不会变成 `\u003c@id\u003e`）。
+
+**`message` 里只有 `content_plain`，没有原始 `content`**：@ 的对象从 `message.mentions`（`member_id/type/display_name`）读取；需要原始 `<@id>` 文本时用 bot 令牌调消息接口取。消息接口和 WebSocket 里的消息对象仍然带 `content`，不受影响。
 ```json
 {
   "event": "message.mention",
@@ -365,7 +367,7 @@ Payload（**发送时**根据最新数据生成；消息在发送前被删除则
   "message": { "id": "…", "seq": 1025, "reply_to": null, "trigger_depth": 0, "created_at": "…",
                "mentions": [ … ], "attachments": [ { "id": "…", "kind": "image", "mime_type": "image/png", "size_bytes": 1,
                "file_name": "a.png", "width": 1, "height": 1, "url": "https://…/content?exp=…&sig=…" } ],
-               "content_plain": "@Grok 帮我总结", "content": "<@…> 帮我总结" },
+               "content_plain": "@Grok 帮我总结" },
   "reply": { "method": "POST", "url": "https://…/api/v1/channels/<channel_id>/messages",
              "auth": "Authorization: Bearer <BOT_TOKEN>",
              "body_hint": { "content": "<@<sender_member_id>> …", "reply_to": "<message_id>" } },
@@ -621,4 +623,5 @@ IP 取连接地址；只有来自本机回环的请求（即 Caddy 反代）才�
 22. **非 admin 读取 bot 时 `webhook` 为 null**。
 23. 新增 IP 频率限制：注册/登录、邀请预览（§11）。
 24. 频道创建/修改仅限用户会话（bot 不可）；频道名 1–64、topic ≤250。
-25. **Webhook payload 字段顺序固定、关键字段进请求头**：顶层顺序为 `event, delivery_id, sent_at, loop_guard, sender, channel, message, reply, team, bot`，`message` 内 `content_plain`、`content` 放最后（之前按字母序输出，长消息被接收方截断时会丢掉 `sender` 和 `message.id`）；JSON 不再做 HTML 转义；message.mention 额外带 `X-TeAms-Message-Id`、`X-TeAms-Channel-Id`、`X-TeAms-Sender-Member-Id`、`X-TeAms-Sender-Type`、`X-TeAms-Trigger-Depth` 请求头。字段名和取值不变，签名仍按原始 body 计算。
+25. **Webhook payload 字段顺序固定、关键字段进请求头**：顶层顺序为 `event, delivery_id, sent_at, loop_guard, sender, channel, message, reply, team, bot`，`message` 内 `content_plain` 放最后（之前按字母序输出，长消息被接收方截断时会丢掉 `sender` 和 `message.id`）；JSON 不再做 HTML 转义；message.mention 额外带 `X-TeAms-Message-Id`、`X-TeAms-Channel-Id`、`X-TeAms-Sender-Member-Id`、`X-TeAms-Sender-Type`、`X-TeAms-Trigger-Depth` 请求头。字段名和取值不变，签名仍按原始 body 计算。
+26. **Webhook payload 的 `message` 去掉 `content`（不兼容变更）**：之前正文发两份（`content` + `content_plain`），长消息体积翻倍；现在只保留 `content_plain`，@ 信息看 `message.mentions`。不做长度截断。只影响 webhook 载荷，消息接口和 WebSocket 的 `content` 不变。读 `message.content` 的接收方要改读 `content_plain`。
