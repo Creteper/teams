@@ -1,6 +1,6 @@
 import type { FrameHandler, RealtimeClient } from "../client";
 import type { Message, ReadyData, ServerFrame } from "../types";
-import { emit, nextId, nextSeq, type MockDb } from "./db";
+import { emit, nextId, nextSeq, senderOf, type Audience, type MockDb } from "./db";
 
 /**
  * Mock 实时通道，帧格式同 docs/api.md §8.2：
@@ -15,6 +15,8 @@ export function createMockRealtime(db: MockDb, opts: { botReplyMs?: number; push
   const readyHandlers = new Set<(d: ReadyData) => void>();
   let timer: ReturnType<typeof setInterval> | null = null;
   let connected = false;
+  /** 当前连接对应的用户（用于模拟只发给本人 / 除本人外的事件） */
+  let userId: string | undefined;
 
   function botSay(botMemberId: string, channelId: string, content: string, parent: Message | null) {
     const bot = db.members.find((m) => m.id === botMemberId);
@@ -26,7 +28,7 @@ export function createMockRealtime(db: MockDb, opts: { botReplyMs?: number; push
       seq: nextSeq(db),
       team_id: channel.team_id,
       channel_id: channelId,
-      sender: { member_id: bot.id, type: "bot", display_name: bot.display_name, avatar_url: bot.avatar_url },
+      sender: senderOf(bot),
       content,
       mentions: mentionIds
         .map((id) => db.members.find((m) => m.id === id && m.team_id === channel.team_id))
@@ -44,8 +46,9 @@ export function createMockRealtime(db: MockDb, opts: { botReplyMs?: number; push
     emit(db, { type: "message.created", team_id: channel.team_id, data: msg });
   }
 
-  function onFrame(frame: ServerFrame) {
-    handlers.forEach((h) => h(frame));
+  function onFrame(frame: ServerFrame, audience?: Audience) {
+    const visible = !audience || ((!audience.only || audience.only === userId) && audience.except !== userId);
+    if (visible) handlers.forEach((h) => h(frame));
     if (frame.type !== "message.created") return;
     const msg = frame.data;
     if (msg.trigger_depth > 3) return; // §7.4 防循环
@@ -71,9 +74,14 @@ export function createMockRealtime(db: MockDb, opts: { botReplyMs?: number; push
   }
 
   return {
-    connect() {
+    connect(token) {
       if (connected) return;
       connected = true;
+      userId = db.sessions.get(token);
+      if (!userId) {
+        const m = /^tas_mock_([a-z0-9_.-]+)_[a-z0-9]+$/.exec(token);
+        userId = m ? [...db.users.values()].find((u) => u.username === m[1])?.id : undefined;
+      }
       db.listeners.add(onFrame);
       if (pushIntervalMs > 0) timer = setInterval(pushTick, pushIntervalMs);
       const member_ids: Record<string, string> = {};

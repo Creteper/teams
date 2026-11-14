@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../errors";
 import type { ServerFrame } from "../types";
-import { createMockDb, IDS } from "./db";
+import { fetchAllMembers } from "../client";
+import { createMockDb, IDS, mockUuid } from "./db";
 import { createMockApi } from "./mockApi";
 import { createMockRealtime } from "./mockRealtime";
 
@@ -17,16 +18,16 @@ describe("mock api（数据形状同 docs/api.md）", () => {
     const { token, user } = await api.login({ username: "alice", password: "anything" });
     expect(token.startsWith("tas_")).toBe(true);
     expect(user.display_name).toBe("Alice");
-    const teams = await api.listTeams(token);
+    const teams = (await api.listTeams(token)).items;
     expect(teams.map((t) => t.name)).toContain("TeAms 开发组");
     const dev = teams.find((t) => t.id === IDS.tDev)!;
     expect(dev.my_role).toBe("owner");
     expect(dev.icon_url).toBeNull();
-    const members = await api.listMembers(token, dev.id);
+    const members = (await api.listMembers(token, dev.id)).items;
     const bot = members.find((m) => m.type === "bot" && m.username === "grok")!;
     expect(bot).toMatchObject({ role: "bot", user_id: null, avatar_shape: "blob", avatar_color: "black" });
     expect(members.filter((m) => m.type === "user").every((m) => m.avatar_shape == null && m.avatar_color == null)).toBe(true);
-    const channels = await api.listChannels(token, dev.id);
+    const channels = (await api.listChannels(token, dev.id)).items;
     expect(channels.some((c) => c.name === "general")).toBe(true);
   });
 
@@ -55,12 +56,16 @@ describe("mock api（数据形状同 docs/api.md）", () => {
     });
   });
 
-  it("消息分页：before/after 按 seq 游标", async () => {
+  it("消息分页：items 升序，next_cursor 语义（无参/before=最小 seq，after=最大 seq）", async () => {
     const { api } = setup();
     const { token } = await api.login({ username: "alice", password: "x" });
     const first = await api.listMessages(token, IDS.cGeneral, { limit: 3 });
     expect(first.items).toHaveLength(3);
     expect(first.has_more).toBe(true);
+    expect(first.items.map((m) => m.seq)).toEqual([...first.items.map((m) => m.seq)].sort((a, b) => a - b));
+    expect(first.next_cursor).toBe(String(first.items[0].seq));
+    const afterPage = await api.listMessages(token, IDS.cGeneral, { after: first.items[0].seq, limit: 1 });
+    expect(afterPage.next_cursor).toBe(String(afterPage.items[0].seq));
     const older = await api.listMessages(token, IDS.cGeneral, { before: first.items[0].seq, limit: 100 });
     expect(older.items.every((m) => m.seq < first.items[0].seq)).toBe(true);
     const newer = await api.listMessages(token, IDS.cGeneral, { after: first.items[0].seq });
@@ -77,6 +82,64 @@ describe("mock api（数据形状同 docs/api.md）", () => {
     const carol = await api.login({ username: "carol", password: "x" });
     await expect(api.addMember(carol.token, IDS.tDev, { username: "dave" })).rejects.toBeInstanceOf(ApiError);
     expect(db.members.filter((x) => x.team_id === IDS.tDev && x.username === "tina")).toHaveLength(1);
+  });
+
+  it("成员分页：limit + cursor，fetchAllMembers 循环拉完", async () => {
+    const { api } = setup();
+    const { token } = await api.login({ username: "alice", password: "x" });
+    const p1 = await api.listMembers(token, IDS.tDev, { limit: 2 });
+    expect(p1.items).toHaveLength(2);
+    expect(p1.has_more).toBe(true);
+    const p2 = await api.listMembers(token, IDS.tDev, { limit: 2, cursor: p1.next_cursor! });
+    expect(p2.items[0].id).not.toBe(p1.items[0].id);
+    const allMembers = await fetchAllMembers(api, token, IDS.tDev, 3);
+    expect(allMembers.length).toBe((await api.listMembers(token, IDS.tDev)).items.length);
+    expect(new Set(allMembers.map((m) => m.id)).size).toBe(allMembers.length);
+  });
+
+  it("client_msg_id：格式校验 + 幂等", async () => {
+    const { api } = setup();
+    const { token } = await api.login({ username: "alice", password: "x" });
+    const a = await api.sendMessage(token, IDS.cGeneral, { content: "hi", attachment_ids: [], client_msg_id: "c-abc_1" });
+    const b = await api.sendMessage(token, IDS.cGeneral, { content: "hi", attachment_ids: [], client_msg_id: "c-abc_1" });
+    expect(b.id).toBe(a.id);
+    await expect(
+      api.sendMessage(token, IDS.cGeneral, { content: "hi", attachment_ids: [], client_msg_id: "bad id!" }),
+    ).rejects.toMatchObject({ code: "validation_failed" });
+  });
+
+  it("附件 URL 刷新：单个 + 批量（≤100）", async () => {
+    const { api } = setup();
+    const { token } = await api.login({ username: "alice", password: "x" });
+    const one = await api.getAttachmentUrl(token, mockUuid(51));
+    expect(Date.parse(one.expires_at)).toBeGreaterThan(Date.now());
+    const many = await api.refreshAttachmentUrls(token, [mockUuid(51), mockUuid(52)]);
+    expect(many.map((x) => x.id)).toEqual([mockUuid(51), mockUuid(52)]);
+    await expect(api.refreshAttachmentUrls(token, Array.from({ length: 101 }, (_, i) => String(i)))).rejects.toMatchObject({
+      status: 400,
+    });
+  });
+
+  it("添加成员：被加入者本人收 team.joined，其他人收 member.joined", async () => {
+    const { db, api } = setup();
+    await api.register({ username: "tina", password: "longenough", display_name: "Tina" });
+    const tinaLogin = await api.login({ username: "tina", password: "x" });
+    const aliceLogin = await api.login({ username: "alice", password: "x" });
+    const tinaRt = createMockRealtime(db, { pushIntervalMs: 0 });
+    const aliceRt = createMockRealtime(db, { pushIntervalMs: 0 });
+    const tinaFrames: string[] = [];
+    const aliceFrames: string[] = [];
+    tinaRt.subscribe((f) => tinaFrames.push(f.type));
+    aliceRt.subscribe((f) => aliceFrames.push(f.type));
+    tinaRt.connect(tinaLogin.token);
+    aliceRt.connect(aliceLogin.token);
+    await api.addMember(aliceLogin.token, IDS.tDev, { username: "tina" });
+    expect(tinaFrames).toContain("team.joined");
+    expect(tinaFrames).not.toContain("member.joined");
+    expect(aliceFrames).toContain("member.joined");
+    expect(aliceFrames).not.toContain("team.joined");
+    tinaRt.disconnect();
+    aliceRt.disconnect();
   });
 
   it("上传：类型/大小前置校验，附件只能被引用一次", async () => {

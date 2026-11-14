@@ -1,11 +1,29 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Attachment, Member, Message } from "../api/types";
 import { parseContent } from "../lib/mention";
 import { formatTime, groupMessages } from "../lib/messages";
 import { BotBadge, MemberAvatar } from "./MemberAvatar";
 
 /** 消息流：头像 + 名字 + 时间，连续消息合并；支持图片预览和视频播放 */
-export function MessageList({ messages, members, myMemberId }: { messages: Message[]; members: Member[]; myMemberId: string }) {
+export function MessageList({
+  messages,
+  members,
+  myMemberId,
+  hasMore = false,
+  loadingOlder = false,
+  onLoadOlder,
+  onMediaError,
+}: {
+  messages: Message[];
+  members: Member[];
+  myMemberId: string;
+  hasMore?: boolean;
+  loadingOlder?: boolean;
+  /** 滚到顶部附近时加载更早消息 */
+  onLoadOlder?(): void;
+  /** 图片/视频加载失败（签名 URL 可能过期）时回调 */
+  onMediaError?(attachmentId: string): void;
+}) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   // 用户停留在底部时，新消息/媒体加载后保持贴底
@@ -16,6 +34,19 @@ export function MessageList({ messages, members, myMemberId }: { messages: Messa
   const [preview, setPreview] = useState<Attachment | null>(null);
   const byId = useMemo(() => new Map(members.map((m) => [m.id, m])), [members]);
   const groups = useMemo(() => groupMessages(messages), [messages]);
+
+  // 头部插入更早消息时保持滚动位置：记录插入前的 scrollHeight，渲染后补偿差值
+  const firstId = messages[0]?.id;
+  const prevFirstIdRef = useRef<string | undefined>(undefined);
+  const prevHeightRef = useRef(0);
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el && prevFirstIdRef.current && firstId !== prevFirstIdRef.current && !stickRef.current) {
+      el.scrollTop += el.scrollHeight - prevHeightRef.current;
+    }
+    prevFirstIdRef.current = firstId;
+    if (el) prevHeightRef.current = el.scrollHeight;
+  });
 
   useEffect(() => {
     stick();
@@ -30,8 +61,23 @@ export function MessageList({ messages, members, myMemberId }: { messages: Messa
       onScroll={(e) => {
         const el = e.currentTarget;
         stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+        prevHeightRef.current = el.scrollHeight;
+        if (el.scrollTop < 120 && hasMore && !loadingOlder) onLoadOlder?.();
       }}
     >
+      {hasMore ? (
+        <div className="py-2 text-center text-xs text-[#949ba4]">
+          {loadingOlder ? (
+            "加载更早的消息…"
+          ) : (
+            <button type="button" className="hover:underline" onClick={() => onLoadOlder?.()}>
+              加载更早的消息
+            </button>
+          )}
+        </div>
+      ) : messages.length > 0 ? (
+        <div className="px-4 pb-2 text-xs text-[#949ba4]">— 已经到频道开头了 —</div>
+      ) : null}
       {groups.length === 0 ? (
         <p className="px-4 text-sm text-[#949ba4]">还没有消息，发第一条吧。</p>
       ) : null}
@@ -82,7 +128,13 @@ export function MessageList({ messages, members, myMemberId }: { messages: Messa
                   {!msg.deleted && msg.attachments.length > 0 ? (
                     <div className="mt-1 flex flex-wrap gap-2">
                       {msg.attachments.map((a) => (
-                        <AttachmentView key={a.id} attachment={a} onPreview={setPreview} onMediaLoad={stick} />
+                        <AttachmentView
+                          key={a.id}
+                          attachment={a}
+                          onPreview={setPreview}
+                          onMediaLoad={stick}
+                          onMediaError={() => onMediaError?.(a.id)}
+                        />
                       ))}
                     </div>
                   ) : null}
@@ -112,15 +164,17 @@ function AttachmentView({
   attachment: a,
   onPreview,
   onMediaLoad,
+  onMediaError,
 }: {
   attachment: Attachment;
   onPreview(a: Attachment): void;
   onMediaLoad(): void;
+  onMediaError(): void;
 }) {
   if (a.kind === "image") {
     return (
       <button type="button" onClick={() => onPreview(a)} className="overflow-hidden rounded-lg" title="点击预览">
-        <img src={a.url} alt={a.file_name} onLoad={onMediaLoad} className="max-h-[300px] max-w-[400px] object-cover" />
+        <img src={a.url} alt={a.file_name} onLoad={onMediaLoad} onError={onMediaError} className="max-h-[300px] max-w-[400px] object-cover" />
       </button>
     );
   }
@@ -131,6 +185,7 @@ function AttachmentView({
       preload="metadata"
       title={a.file_name}
       onLoadedMetadata={onMediaLoad}
+      onError={onMediaError}
       className="max-h-[300px] max-w-[400px] rounded-lg bg-black"
     />
   );

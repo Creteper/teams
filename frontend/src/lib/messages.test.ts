@@ -7,7 +7,7 @@ const mk = (id: string, seq: number, sender: string, minute: number): Message =>
   seq,
   team_id: "t",
   channel_id: "c",
-  sender: { member_id: sender, type: "user", display_name: sender },
+  sender: { member_id: sender, type: "user", display_name: sender, avatar_url: null, avatar_shape: null, avatar_color: null },
   content: id,
   mentions: [],
   attachments: [],

@@ -7,6 +7,7 @@ import { createMockApi } from "./mock/mockApi";
 import { createMockRealtime } from "./mock/mockRealtime";
 
 export type { TeamsApi, RealtimeClient, FrameHandler } from "./client";
+export { fetchAllMembers } from "./client";
 export * from "./types";
 export { ApiError } from "./errors";
 

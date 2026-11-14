@@ -74,10 +74,10 @@ export interface Member {
   username: string;
   /** null 或 `/api/v1/avatars/<avatar_id>`；bot 头像由后端从 Grok Bot 同步 */
   avatar_url: string | null;
-  /** 程序化 bot 头像形状（小写，如 "blob"）；用户成员始终为 null */
-  avatar_shape?: string | null;
-  /** 程序化 bot 头像颜色（小写，如 "black"）；用户成员始终为 null */
-  avatar_color?: string | null;
+  /** 程序化 bot 头像形状（如 "blob"），原样存储不保证小写；用户成员始终为 null */
+  avatar_shape: string | null;
+  /** 程序化 bot 头像颜色（如 "black"），原样存储不保证小写；用户成员始终为 null */
+  avatar_color: string | null;
   role: MemberRole;
   joined_at: Timestamp;
 }
@@ -110,7 +110,10 @@ export interface MessageSender {
   member_id: ID;
   type: MemberType;
   display_name: string;
-  avatar_url?: string | null;
+  avatar_url: string | null;
+  /** 原样存储，不保证小写；前端解析时 trim + 忽略大小写 */
+  avatar_shape: string | null;
+  avatar_color: string | null;
 }
 
 export interface MessageMention {
@@ -158,14 +161,30 @@ export interface SendMessageInput {
   client_msg_id?: string;
 }
 
-/** 消息分页：before/after 是 seq 游标（§0.3、§4.4） */
+/** 附件签名 URL 刷新结果：GET /attachments/{id}、POST /attachments/urls */
+export interface AttachmentUrl {
+  id: ID;
+  url: string;
+  expires_at: Timestamp;
+}
+
+/**
+ * 消息分页：before/after 是 seq 游标。items 一律按 seq 升序；
+ * next_cursor 为 seq 十进制字符串：无参/before 时是本页最小 seq，after 时是本页最大 seq。
+ */
 export interface MessagePageQuery {
   limit?: number;
   before?: number;
   after?: number;
 }
 
-/** 通用分页响应（§0.3） */
+/** 成员分页：limit 默认 100、最大 200；cursor 取上一页 next_cursor */
+export interface MemberPageQuery {
+  limit?: number;
+  cursor?: string;
+}
+
+/** 通用分页响应（§0.3）：teams/channels/members/messages/invites 一律用此形状 */
 export interface Page<T> {
   items: T[];
   next_cursor: string | null;
@@ -193,7 +212,7 @@ interface FrameBase {
   team_id?: ID;
 }
 
-/** 服务端 → 客户端帧 */
+/** 服务端 → 客户端帧。team 范围事件（message.* / channel.* / member.* / team.*）带 team_id；ready/pong/error 不带 */
 export type ServerFrame = FrameBase &
   (
     | { type: "ready"; data: ReadyData }
@@ -203,7 +222,7 @@ export type ServerFrame = FrameBase &
     | { type: "channel.deleted"; data: { id: ID } }
     | { type: "member.joined" | "member.updated"; data: Member }
     | { type: "member.left"; data: { member_id: ID } }
-    | { type: "team.updated"; data: Team }
+    | { type: "team.updated" | "team.joined"; data: Team }
     | { type: "team.deleted" | "team.removed"; data: { team_id: ID } }
     | { type: "pong"; data: Record<string, never> }
     | { type: "error"; data: { code: string; message?: string } }

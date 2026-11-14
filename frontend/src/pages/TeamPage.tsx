@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams } from "react-router";
 import { Spinner } from "@heroui/react";
-import { api, realtime } from "../api";
+import { api, fetchAllMembers, realtime } from "../api";
 import type { Channel, Member, Message, Team } from "../api/types";
 import { useAuth, useToken } from "../auth/AuthContext";
 import { ChannelSidebar } from "../components/ChannelSidebar";
@@ -12,6 +12,7 @@ import { TeamDialog } from "../components/TeamForms";
 import { TeamRail } from "../components/TeamRail";
 import { useTeams } from "../hooks";
 import { mergeMessages } from "../lib/messages";
+import { applyAttachmentUrls, chunk, idsNeedingRefresh } from "../lib/attachments";
 
 /** Team 主界面（Discord 式四栏）：team 图标栏 | 频道侧栏 | 消息区 | 成员列表 */
 export default function TeamPage() {
@@ -28,9 +29,18 @@ export default function TeamPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [olderCursor, setOlderCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const maxSeqRef = useRef(0);
+  const messagesRef = useRef<Message[]>([]);
+  /** 附件 id -> 已知到期时间（来自刷新接口的 expires_at） */
+  const expiriesRef = useRef(new Map<string, number>());
+  /** 加载失败已重试过的附件 id（只重试一次） */
+  const retriedRef = useRef(new Set<string>());
 
   useEffect(() => {
+    messagesRef.current = messages;
     maxSeqRef.current = messages.reduce((mx, m) => Math.max(mx, m.seq), 0);
   }, [messages]);
 
@@ -39,11 +49,11 @@ export default function TeamPage() {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    Promise.all([api.getTeam(token, teamId), api.listChannels(token, teamId), api.listMembers(token, teamId)])
+    Promise.all([api.getTeam(token, teamId), api.listChannels(token, teamId), fetchAllMembers(api, token, teamId)])
       .then(([t, cs, ms]) => {
         if (cancelled) return;
         setTeam(t);
-        setChannels(cs);
+        setChannels(cs.items);
         setMembers(ms);
       })
       .catch((e: unknown) => {
@@ -62,10 +72,15 @@ export default function TeamPage() {
     if (!channelId) return;
     let cancelled = false;
     setMessages([]);
+    setHasMore(false);
+    setOlderCursor(null);
     api
       .listMessages(token, channelId, { limit: 50 })
       .then((page) => {
-        if (!cancelled) setMessages(page.items);
+        if (cancelled) return;
+        setMessages(page.items);
+        setHasMore(page.has_more);
+        setOlderCursor(page.next_cursor);
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
@@ -74,6 +89,55 @@ export default function TeamPage() {
       cancelled = true;
     };
   }, [token, channelId]);
+
+  // 向上滚动加载更早消息：before = 上一页 next_cursor（本页最小 seq）
+  const loadOlder = useCallback(async () => {
+    if (!channelId || !hasMore || !olderCursor || loadingOlder) return;
+    setLoadingOlder(true);
+    try {
+      const page = await api.listMessages(token, channelId, { before: Number(olderCursor), limit: 50 });
+      setMessages((prev) => mergeMessages(prev, page.items));
+      setHasMore(page.has_more);
+      setOlderCursor(page.next_cursor);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [token, channelId, hasMore, olderCursor, loadingOlder]);
+
+  // 签名 URL 快到期时批量刷新（每分钟检查，提前 5 分钟，单批 ≤100）
+  useEffect(() => {
+    const timer = setInterval(async () => {
+      const ids = idsNeedingRefresh(messagesRef.current, expiriesRef.current, Date.now());
+      for (const batch of chunk(ids, 100)) {
+        try {
+          const urls = await api.refreshAttachmentUrls(token, batch);
+          urls.forEach((u) => expiriesRef.current.set(u.id, Date.parse(u.expires_at)));
+          setMessages((prev) => applyAttachmentUrls(prev, urls));
+        } catch {
+          /* 下次再试 */
+        }
+      }
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, [token]);
+
+  // 图片/视频加载失败：单个刷新并重试一次
+  const onMediaError = useCallback(
+    async (attachmentId: string) => {
+      if (retriedRef.current.has(attachmentId)) return;
+      retriedRef.current.add(attachmentId);
+      try {
+        const u = await api.getAttachmentUrl(token, attachmentId);
+        expiriesRef.current.set(u.id, Date.parse(u.expires_at));
+        setMessages((prev) => applyAttachmentUrls(prev, [u]));
+      } catch {
+        /* 放弃 */
+      }
+    },
+    [token],
+  );
 
   // 断线重连后用 after=<seq> 补拉（docs/api.md §8.3）
   useEffect(() => {
@@ -121,19 +185,16 @@ export default function TeamPage() {
           if (frame.data.id === channelId) navigate(`/teams/${teamId}`, { replace: true });
           break;
         case "team.updated":
-          setTeam(frame.data);
-          void reloadTeams();
+          if (frame.data.id === teamId) setTeam(frame.data);
           break;
         case "team.deleted":
         case "team.removed":
-          if (frame.data.team_id === teamId) {
-            void reloadTeams();
-            navigate("/teams", { replace: true });
-          }
+          // 被移出 / team 被删：正在该 team 就跳回 team 列表（图标栏由 useTeams 更新）
+          if (frame.data.team_id === teamId) navigate("/teams", { replace: true });
           break;
       }
     });
-  }, [teamId, channelId, navigate, reloadTeams]);
+  }, [teamId, channelId, navigate]);
 
   if (!user) return null;
   if (!channelId && channels.length > 0 && channels[0].team_id === teamId) {
@@ -178,7 +239,15 @@ export default function TeamPage() {
           </div>
         ) : channel ? (
           <>
-            <MessageList messages={messages} members={members} myMemberId={myMemberId} />
+            <MessageList
+              messages={messages}
+              members={members}
+              myMemberId={myMemberId}
+              hasMore={hasMore}
+              loadingOlder={loadingOlder}
+              onLoadOlder={loadOlder}
+              onMediaError={onMediaError}
+            />
             <Composer
               channelName={channel.name}
               members={members.filter((m) => m.id !== myMemberId)}

@@ -1,8 +1,8 @@
 import type { TeamsApi } from "../client";
 import { ApiError } from "../errors";
-import type { Attachment, AuthResponse, Member, Message, Team, User } from "../types";
+import type { Attachment, AttachmentUrl, AuthResponse, Member, Message, Page, Team, User } from "../types";
 import { checkUpload } from "../../lib/upload";
-import { emit, nextId, nextSeq, type MockDb, type TeamRecord } from "./db";
+import { emit, nextId, nextSeq, senderOf, type MockDb, type TeamRecord } from "./db";
 
 /**
  * Mock 实现：内存数据 + 少量延迟，校验规则和错误码尽量贴近 docs/api.md。
@@ -10,6 +10,9 @@ import { emit, nextId, nextSeq, type MockDb, type TeamRecord } from "./db";
  */
 
 const USERNAME_RE = /^[a-z0-9_.-]{3,32}$/;
+const CLIENT_MSG_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
+const all = <T,>(items: T[]): Page<T> => ({ items, next_cursor: null, has_more: false });
 
 export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): TeamsApi {
   const latency = opts.latencyMs ?? 150;
@@ -120,7 +123,7 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
         const me = myMember(user, t.id);
         if (me) out.push(view(t, me));
       }
-      return out;
+      return all(out);
     },
 
     async createTeam(token, input) {
@@ -158,10 +161,16 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
       return view(db.teams.get(teamId)!, me);
     },
 
-    async listMembers(token, teamId) {
+    async listMembers(token, teamId, query = {}) {
       await delay();
       requireMember(authed(token), teamId);
-      return db.members.filter((m) => m.team_id === teamId);
+      const limit = Math.min(Math.max(query.limit ?? 100, 1), 200);
+      const list = db.members.filter((m) => m.team_id === teamId);
+      // mock 游标：上一页最后一个 member_id
+      const start = query.cursor ? list.findIndex((m) => m.id === query.cursor) + 1 : 0;
+      const items = list.slice(start, start + limit);
+      const has_more = start + limit < list.length;
+      return { items, has_more, next_cursor: has_more ? items[items.length - 1].id : null };
     },
 
     async addMember(token, teamId, input) {
@@ -172,14 +181,16 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
       if (!target) throw err(404, "not_found", "用户不存在");
       if (db.members.some((m) => m.team_id === teamId && m.user_id === target.id)) throw err(409, "conflict", "该用户已是成员");
       const member = addUserMember(teamId, target, input.role ?? "member");
-      emit(db, { type: "member.joined", team_id: teamId, data: member });
+      // 被加入者本人收 team.joined（完整 team），其他人收 member.joined
+      emit(db, { type: "team.joined", team_id: teamId, data: view(db.teams.get(teamId)!, member) }, { only: target.id });
+      emit(db, { type: "member.joined", team_id: teamId, data: member }, { except: target.id });
       return member;
     },
 
     async listChannels(token, teamId) {
       await delay();
       requireMember(authed(token), teamId);
-      return [...db.channels.values()].filter((c) => c.team_id === teamId).sort((a, b) => a.created_at.localeCompare(b.created_at));
+      return all([...db.channels.values()].filter((c) => c.team_id === teamId).sort((a, b) => a.created_at.localeCompare(b.created_at)));
     },
 
     async createChannel(token, teamId, input) {
@@ -212,17 +223,21 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
       requireMember(user, channel.team_id);
       const limit = Math.min(query.limit ?? 50, 100);
       let list = db.messages.filter((m) => m.channel_id === channelId).sort((a, b) => a.seq - b.seq);
+      // items 一律按 seq 升序；next_cursor：无参/before = 本页最小 seq，after = 本页最大 seq
       let has_more: boolean;
+      let next_cursor: string | null;
       if (query.after !== undefined) {
         list = list.filter((m) => m.seq > query.after!);
         has_more = list.length > limit;
         list = list.slice(0, limit);
+        next_cursor = list.length ? String(list[list.length - 1].seq) : null;
       } else {
         if (query.before !== undefined) list = list.filter((m) => m.seq < query.before!);
         has_more = list.length > limit;
         list = list.slice(-limit);
+        next_cursor = list.length ? String(list[0].seq) : null;
       }
-      return { items: list, has_more, next_cursor: has_more && list.length ? String(list[0].seq) : null };
+      return { items: list, has_more, next_cursor };
     },
 
     async sendMessage(token, channelId, input) {
@@ -236,6 +251,14 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
       }
       if (input.content.length > 8000) throw err(400, "validation_failed", "content 最长 8000 字符");
       if (input.attachment_ids.length > 10) throw err(400, "validation_failed", "attachment_ids 最多 10 个");
+      if (input.client_msg_id !== undefined) {
+        if (!CLIENT_MSG_ID_RE.test(input.client_msg_id)) {
+          throw err(400, "validation_failed", "client_msg_id 需 1–64 位 [A-Za-z0-9_-]", { field: "client_msg_id" });
+        }
+        const prevId = db.clientMsgIds.get(`${me.id}:${input.client_msg_id}`);
+        const prev = prevId ? db.messages.find((m) => m.id === prevId) : undefined;
+        if (prev) return prev;
+      }
       const attachments: Attachment[] = input.attachment_ids.map((id) => {
         const a = db.attachments.get(id);
         if (!a || db.usedAttachments.has(id)) throw err(400, "validation_failed", "附件不可用", { field: "attachment_ids" });
@@ -255,7 +278,7 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
         seq: nextSeq(db),
         team_id: channel.team_id,
         channel_id: channelId,
-        sender: { member_id: me.id, type: "user", display_name: me.display_name, avatar_url: me.avatar_url },
+        sender: senderOf(me),
         content: input.content,
         mentions,
         attachments,
@@ -266,6 +289,7 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
         deleted: false,
       };
       db.messages.push(message);
+      if (input.client_msg_id) db.clientMsgIds.set(`${me.id}:${input.client_msg_id}`, message.id);
       channel.last_message_seq = message.seq;
       emit(db, { type: "message.created", team_id: channel.team_id, data: message });
       return message;
@@ -293,5 +317,25 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
       db.attachments.set(attachment.id, attachment);
       return attachment;
     },
+
+    async getAttachmentUrl(token, id) {
+      await delay();
+      authed(token);
+      const a = db.attachments.get(id);
+      if (!a) throw err(404, "not_found", "附件不存在");
+      return signed(a);
+    },
+
+    async refreshAttachmentUrls(token, ids) {
+      await delay();
+      authed(token);
+      if (ids.length > 100) throw err(400, "validation_failed", "ids 最多 100 个", { field: "ids" });
+      return ids.map((id) => db.attachments.get(id)).filter((a): a is Attachment => !!a).map(signed);
+    },
   };
+
+  /** mock 无真实签名：URL 原样返回，expires_at = 现在 + 1 小时 */
+  function signed(a: Attachment): AttachmentUrl {
+    return { id: a.id, url: a.url, expires_at: new Date(Date.now() + 3600_000).toISOString() };
+  }
 }

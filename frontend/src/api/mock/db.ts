@@ -5,6 +5,13 @@ import type { Attachment, Channel, Member, Message, ServerFrame, Team, User } fr
  * 不保存任何密码；会话令牌是随机 mock 串。
  */
 
+export interface Audience {
+  /** 仅发给该用户 */
+  only?: string;
+  /** 发给除该用户外的人 */
+  except?: string;
+}
+
 export type TeamRecord = Omit<Team, "my_member_id" | "my_role">;
 
 export interface MockDb {
@@ -17,7 +24,10 @@ export interface MockDb {
   attachments: Map<string, Attachment>;
   /** 已被消息引用的附件 id（§4.3：附件只能被引用一次） */
   usedAttachments: Set<string>;
-  listeners: Set<(frame: ServerFrame) => void>;
+  /** 事件总线；audience 用于模拟“只发给某人 / 发给除某人外” */
+  listeners: Set<(frame: ServerFrame, audience?: Audience) => void>;
+  /** client_msg_id 幂等：`${member_id}:${client_msg_id}` -> message id */
+  clientMsgIds: Map<string, string>;
   seq: number;
   idCounter: number;
 }
@@ -37,9 +47,20 @@ export function nextSeq(db: MockDb): number {
   return db.seq;
 }
 
-export function emit(db: MockDb, frame: ServerFrame): void {
+export function emit(db: MockDb, frame: ServerFrame, audience?: Audience): void {
   const full = { id: `evt_${nextId(db).slice(-8)}`, ts: new Date().toISOString(), ...frame } as ServerFrame;
-  db.listeners.forEach((l) => l(full));
+  db.listeners.forEach((l) => l(full, audience));
+}
+
+export function senderOf(m: Member): Message["sender"] {
+  return {
+    member_id: m.id,
+    type: m.type,
+    display_name: m.display_name,
+    avatar_url: m.avatar_url,
+    avatar_shape: m.avatar_shape,
+    avatar_color: m.avatar_color,
+  };
 }
 
 function svgDataUrl(svg: string): string {
@@ -281,7 +302,7 @@ export function createMockDb(): MockDb {
       seq,
       team_id: s.team_id,
       channel_id: channelId,
-      sender: { member_id: s.id, type: s.type, display_name: s.display_name, avatar_url: s.avatar_url },
+      sender: senderOf(s),
       content,
       mentions: [...new Set(mentionIds)].map((id) => {
         const m = memberById.get(id)!;
@@ -331,6 +352,7 @@ export function createMockDb(): MockDb {
     ]),
     usedAttachments: new Set([img.id, video.id]),
     listeners: new Set(),
+    clientMsgIds: new Map(),
     seq,
     idCounter: 1000,
   };
