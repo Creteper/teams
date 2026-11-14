@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 
 const BASE = process.env.E2E_BASE ?? "http://localhost:5190";
 const SHOTS = process.env.E2E_SHOTS ?? "./e2e-shots";
-const VIDEO = process.env.E2E_VIDEO ?? join(dirname(fileURLToPath(import.meta.url)), "../public/media/demo-standup.mp4");
+const VIDEO = process.env.E2E_VIDEO ?? join(dirname(fileURLToPath(import.meta.url)), "../src/api/mock/assets/demo-standup.mp4");
 mkdirSync(SHOTS, { recursive: true });
 
 const rnd = (n) => randomBytes(n).toString("base64url").slice(0, n);

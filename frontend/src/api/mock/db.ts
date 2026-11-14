@@ -1,4 +1,5 @@
 import type { Attachment, BotRunItem, Channel, Invite, Member, Message, ServerFrame, Team, User } from "../types";
+import standupVideoUrl from "./assets/demo-standup.mp4?url";
 
 /**
  * Mock 内存数据库（刷新即重置），数据形状与 docs/api.md 一致。
@@ -309,7 +310,7 @@ export function createMockDb(): MockDb {
     height: 270,
     duration_ms: null,
     // 故意指向不存在的文件：演示媒体加载失败的占位和重试
-    url: "/media/__missing__.png?exp=1&sig=mock",
+    url: "/__missing__/expired-link.png?exp=1&sig=mock",
     expires_at: new Date(Date.now() + 3600_000).toISOString(),
   };
   const img: Attachment = {
@@ -333,8 +334,8 @@ export function createMockDb(): MockDb {
     width: 480,
     height: 270,
     duration_ms: null, // 后端目前恒为 null
-    // 本地示例视频（public/media，ffmpeg testsrc 生成）
-    url: "/media/demo-standup.mp4",
+    // 本地示例视频（ffmpeg testsrc 生成；随 mock 一起按需打包，生产包不含）
+    url: standupVideoUrl,
     expires_at: new Date(Date.now() + 3600_000).toISOString(),
   };
 
