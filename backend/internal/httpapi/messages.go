@@ -1,0 +1,543 @@
+package httpapi
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+	"unicode/utf8"
+
+	"github.com/creteper/teams/backend/internal/apierr"
+	"github.com/creteper/teams/backend/internal/mention"
+	"github.com/creteper/teams/backend/internal/webhook"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+)
+
+var clientMsgIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+const (
+	maxContentRunes = 8000
+	maxMentions     = 20
+	maxAttachments  = 10
+)
+
+func apierrIsUnique(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
+// TriggerDepth computes the loop-guard depth of a new message.
+// parentDepth is nil when the message has no reply_to.
+func TriggerDepth(senderIsBot bool, parentDepth *int) int {
+	if !senderIsBot {
+		return 0
+	}
+	if parentDepth == nil {
+		return 1
+	}
+	return *parentDepth + 1
+}
+
+// resolveMentions returns valid team member ids referenced in content (max 20).
+func resolveMentions(ctx context.Context, q querier, teamID, content string) ([]string, error) {
+	ids := mention.Parse(content)
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := q.Query(ctx, `SELECT m.id FROM team_members m LEFT JOIN bots b ON b.id=m.bot_id
+		WHERE m.team_id=$1 AND m.id = ANY($2::uuid[]) AND m.left_at IS NULL AND (b.id IS NULL OR b.deleted_at IS NULL)`, teamID, ids)
+	if err != nil {
+		return nil, err
+	}
+	valid := map[string]bool{}
+	got, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, err
+	}
+	for _, v := range got {
+		valid[v] = true
+	}
+	var out []string
+	for _, id := range ids {
+		if valid[id] && len(out) < maxMentions {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+func insertMentions(ctx context.Context, q querier, msgID string, ids []string) error {
+	for i, id := range ids {
+		if _, err := q.Exec(ctx, `INSERT INTO message_mentions(message_id, member_id, position) VALUES($1,$2,$3)`, msgID, id, i); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateContent(content string, attachments int) error {
+	if utf8.RuneCountInString(content) > maxContentRunes {
+		return apierr.Validation("content", "content 最长 8000 字符")
+	}
+	if strings.TrimSpace(content) == "" && attachments == 0 {
+		return apierr.Validation("content", "content 和 attachment_ids 不能同时为空")
+	}
+	return nil
+}
+
+func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) error {
+	c, a, err := s.channelParam(r)
+	if err != nil {
+		return err
+	}
+	ctx := r.Context()
+	p := principalFrom(ctx)
+	var body struct {
+		Content       string   `json:"content"`
+		AttachmentIDs []string `json:"attachment_ids"`
+		ReplyTo       *string  `json:"reply_to"`
+		ClientMsgID   *string  `json:"client_msg_id"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		return err
+	}
+	if err := validateContent(body.Content, len(body.AttachmentIDs)); err != nil {
+		return err
+	}
+	if len(body.AttachmentIDs) > maxAttachments {
+		return apierr.Validation("attachment_ids", "最多 10 个附件")
+	}
+	attIDs := map[string]bool{}
+	for _, id := range body.AttachmentIDs {
+		u, err := uuid.Parse(id)
+		if err != nil {
+			return apierr.Validation("attachment_ids", "附件 id 无效")
+		}
+		attIDs[u.String()] = true
+	}
+	var clientID *string
+	if body.ClientMsgID != nil {
+		if !clientMsgIDRe.MatchString(*body.ClientMsgID) {
+			return apierr.Validation("client_msg_id", "client_msg_id 需 1–64 位，只能包含 A-Z a-z 0-9 _ -")
+		}
+		clientID = body.ClientMsgID
+		if existing, ok := s.findClientMsg(ctx, s.pool, a.MemberID, c.ID, *clientID); ok {
+			m, err := s.loadMessage(ctx, s.pool, existing)
+			if err != nil {
+				return err
+			}
+			return writeJSON(w, http.StatusOK, m)
+		}
+	}
+	// rate limits
+	if p.Bot != nil {
+		if ok, wait := s.limiter.Allow("msg:bot:"+p.Bot.ID+":"+c.ID, s.cfg.BotMsgRatePerMinute, time.Minute); !ok {
+			return apierr.RateLimited(wait)
+		}
+	} else if ok, wait := s.limiter.Allow("msg:user:"+a.MemberID, s.cfg.UserMsgRatePer10s, 10*time.Second); !ok {
+		return apierr.RateLimited(wait)
+	}
+
+	msgID := newID()
+	enqueued := false
+	var dupID string
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if clientID != nil {
+			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "cmid:"+a.MemberID+":"+c.ID+":"+*clientID); err != nil {
+				return err
+			}
+			if existing, ok := s.findClientMsg(ctx, tx, a.MemberID, c.ID, *clientID); ok {
+				dupID = existing
+				return nil
+			}
+		}
+		var parentDepth *int
+		var replyTo *string
+		if body.ReplyTo != nil && *body.ReplyTo != "" {
+			u, err := uuid.Parse(*body.ReplyTo)
+			if err != nil {
+				return apierr.Validation("reply_to", "reply_to 无效")
+			}
+			var pch string
+			var pd int
+			err = tx.QueryRow(ctx, `SELECT channel_id, trigger_depth FROM messages WHERE id=$1`, u.String()).Scan(&pch, &pd)
+			if err != nil || pch != c.ID {
+				return apierr.Validation("reply_to", "reply_to 必须是同一频道的消息")
+			}
+			parentDepth = &pd
+			rs := u.String()
+			replyTo = &rs
+		}
+		depth := TriggerDepth(p.Bot != nil, parentDepth)
+		mentions, err := resolveMentions(ctx, tx, c.TeamID, body.Content)
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `INSERT INTO messages(id, team_id, channel_id, sender_member_id, content, reply_to, trigger_depth, client_msg_id)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, msgID, c.TeamID, c.ID, a.MemberID, body.Content, replyTo, depth, clientID)
+		if err != nil {
+			return err
+		}
+		if err := insertMentions(ctx, tx, msgID, mentions); err != nil {
+			return err
+		}
+		if len(attIDs) > 0 {
+			ids := make([]string, 0, len(attIDs))
+			for id := range attIDs {
+				ids = append(ids, id)
+			}
+			tag, err := tx.Exec(ctx, `UPDATE attachments SET message_id=$1 WHERE id = ANY($2::uuid[]) AND team_id=$3
+				AND uploader_member_id=$4 AND message_id IS NULL`, msgID, ids, c.TeamID, a.MemberID)
+			if err != nil {
+				return err
+			}
+			if int(tag.RowsAffected()) != len(ids) {
+				return apierr.Validation("attachment_ids", "附件不存在、不是你上传的或已被其他消息引用")
+			}
+		}
+		enqueued, err = s.enqueueMentionWebhooks(ctx, tx, msgID, c.ID, a.MemberID, depth, mentions)
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if dupID != "" {
+		m, err := s.loadMessage(ctx, s.pool, dupID)
+		if err != nil {
+			return err
+		}
+		return writeJSON(w, http.StatusOK, m)
+	}
+	if enqueued {
+		s.worker.Wake()
+	}
+	m, err := s.loadMessage(ctx, s.pool, msgID)
+	if err != nil {
+		return err
+	}
+	s.hub.PublishTeam(c.TeamID, "message.created", m)
+	return writeJSON(w, http.StatusCreated, m)
+}
+
+// findClientMsg looks up an idempotent resend (same sender+channel, 24h).
+func (s *Server) findClientMsg(ctx context.Context, q querier, memberID, channelID, clientID string) (string, bool) {
+	var id string
+	err := q.QueryRow(ctx, `SELECT id FROM messages WHERE sender_member_id=$1 AND channel_id=$2 AND client_msg_id=$3
+		AND created_at > now() - interval '24 hours' ORDER BY seq DESC LIMIT 1`, memberID, channelID, clientID).Scan(&id)
+	return id, err == nil
+}
+
+// enqueueMentionWebhooks applies the loop guard and inserts deliveries.
+// Returns true if any delivery is pending.
+func (s *Server) enqueueMentionWebhooks(ctx context.Context, tx pgx.Tx, msgID, channelID, senderMemberID string, depth int, mentions []string) (bool, error) {
+	if len(mentions) == 0 {
+		return false, nil
+	}
+	rows, err := tx.Query(ctx, `SELECT b.id FROM bots b JOIN bot_webhooks w ON w.bot_id=b.id
+		WHERE b.member_id = ANY($1::uuid[]) AND b.deleted_at IS NULL AND w.enabled AND b.member_id <> $2`, mentions, senderMemberID)
+	if err != nil {
+		return false, err
+	}
+	bots, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return false, err
+	}
+	pending := false
+	for _, botID := range bots {
+		status := "pending"
+		var lastErr *string
+		if depth > s.cfg.MaxTriggerDepth {
+			status = "skipped_depth"
+		} else {
+			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "wh:"+botID+":"+channelID); err != nil {
+				return false, err
+			}
+			var n int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM webhook_deliveries WHERE bot_id=$1 AND channel_id=$2
+				AND created_at > now() - interval '60 seconds' AND status NOT IN ('skipped_depth','skipped_rate_limited')`, botID, channelID).Scan(&n); err != nil {
+				return false, err
+			}
+			if s.cfg.WebhookRatePerMinute > 0 && n >= s.cfg.WebhookRatePerMinute {
+				status = "skipped_rate_limited"
+			}
+		}
+		if status != "pending" {
+			e := status
+			lastErr = &e
+		}
+		_, err := tx.Exec(ctx, `INSERT INTO webhook_deliveries(id, bot_id, message_id, channel_id, event, status, last_error, finished_at)
+			VALUES($1,$2,$3,$4,'message.mention',$5,$6, CASE WHEN $5='pending' THEN NULL ELSE now() END)`,
+			newID(), botID, msgID, channelID, status, lastErr)
+		if err != nil {
+			return false, err
+		}
+		if status == "pending" {
+			pending = true
+		}
+	}
+	return pending, nil
+}
+
+func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) error {
+	c, _, err := s.channelParam(r)
+	if err != nil {
+		return err
+	}
+	q := r.URL.Query()
+	limit := 50
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 {
+			return apierr.Validation("limit", "limit 无效")
+		}
+		limit = min(n, 100)
+	}
+	before, after := q.Get("before"), q.Get("after")
+	if before != "" && after != "" {
+		return apierr.BadRequest("before 和 after 不能同时使用")
+	}
+	parse := func(v, f string) (int64, error) {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return 0, apierr.Validation(f, f+" 必须是 seq 整数")
+		}
+		return n, nil
+	}
+	var sql string
+	args := []any{c.ID, limit + 1}
+	switch {
+	case after != "":
+		n, err := parse(after, "after")
+		if err != nil {
+			return err
+		}
+		sql = `SELECT id FROM messages WHERE channel_id=$1 AND seq > $3 ORDER BY seq ASC LIMIT $2`
+		args = append(args, n)
+	case before != "":
+		n, err := parse(before, "before")
+		if err != nil {
+			return err
+		}
+		sql = `SELECT id FROM messages WHERE channel_id=$1 AND seq < $3 ORDER BY seq DESC LIMIT $2`
+		args = append(args, n)
+	default:
+		sql = `SELECT id FROM messages WHERE channel_id=$1 ORDER BY seq DESC LIMIT $2`
+	}
+	ctx := r.Context()
+	rows, err := s.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return err
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return err
+	}
+	hasMore := len(ids) > limit
+	if hasMore {
+		ids = ids[:limit]
+	}
+	if after == "" {
+		slices.Reverse(ids) // always return ascending seq
+	}
+	items, err := s.loadMessages(ctx, s.pool, ids)
+	if err != nil {
+		return err
+	}
+	var next *string
+	if len(items) > 0 {
+		var v string
+		if after != "" {
+			v = strconv.FormatInt(items[len(items)-1].Seq, 10)
+		} else {
+			v = strconv.FormatInt(items[0].Seq, 10)
+		}
+		next = &v
+	}
+	return writeList(w, items, next, hasMore)
+}
+
+// messageParam loads a message and checks the caller can see it.
+func (s *Server) messageParam(r *http.Request) (*messageView, *actor, string, error) {
+	id, err := pathID(r, "message_id", "消息")
+	if err != nil {
+		return nil, nil, "", err
+	}
+	ctx := r.Context()
+	var teamID, sender string
+	err = s.pool.QueryRow(ctx, `SELECT m.team_id, m.sender_member_id FROM messages m JOIN channels c ON c.id=m.channel_id
+		WHERE m.id=$1 AND c.deleted_at IS NULL`, id).Scan(&teamID, &sender)
+	if err != nil {
+		return nil, nil, "", apierr.NotFound("消息")
+	}
+	a, err := s.actorIn(ctx, s.pool, principalFrom(ctx), teamID)
+	if err != nil {
+		return nil, nil, "", apierr.NotFound("消息")
+	}
+	m, err := s.loadMessage(ctx, s.pool, id)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return m, a, sender, nil
+}
+
+func (s *Server) getMessage(w http.ResponseWriter, r *http.Request) error {
+	m, _, _, err := s.messageParam(r)
+	if err != nil {
+		return err
+	}
+	return writeJSON(w, http.StatusOK, m)
+}
+
+func (s *Server) editMessage(w http.ResponseWriter, r *http.Request) error {
+	m, a, sender, err := s.messageParam(r)
+	if err != nil {
+		return err
+	}
+	if sender != a.MemberID {
+		return apierr.Forbidden("只能编辑自己的消息")
+	}
+	if m.Deleted {
+		return apierr.NotFound("消息")
+	}
+	var body struct {
+		Content string `json:"content"`
+	}
+	if err := decodeJSON(r, &body); err != nil {
+		return err
+	}
+	if err := validateContent(body.Content, len(m.Attachments)); err != nil {
+		return err
+	}
+	ctx := r.Context()
+	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		mentions, err := resolveMentions(ctx, tx, m.TeamID, body.Content)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE messages SET content=$2, edited_at=now() WHERE id=$1`, m.ID, body.Content); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM message_mentions WHERE message_id=$1`, m.ID); err != nil {
+			return err
+		}
+		return insertMentions(ctx, tx, m.ID, mentions)
+	})
+	if err != nil {
+		return err
+	}
+	m, err = s.loadMessage(ctx, s.pool, m.ID)
+	if err != nil {
+		return err
+	}
+	s.hub.PublishTeam(m.TeamID, "message.updated", m)
+	return writeJSON(w, http.StatusOK, m)
+}
+
+func (s *Server) deleteMessage(w http.ResponseWriter, r *http.Request) error {
+	m, a, sender, err := s.messageParam(r)
+	if err != nil {
+		return err
+	}
+	if sender != a.MemberID && !a.admin() {
+		return apierr.Forbidden("只能删除自己的消息")
+	}
+	if !m.Deleted {
+		if _, err := s.pool.Exec(r.Context(), `UPDATE messages SET deleted_at=now() WHERE id=$1`, m.ID); err != nil {
+			return err
+		}
+		s.hub.PublishTeam(m.TeamID, "message.deleted", map[string]any{"id": m.ID, "channel_id": m.ChannelID, "seq": m.Seq})
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil
+}
+
+// ---------- webhook payload ----------
+
+type payloadBot struct {
+	ID          string  `json:"id"`
+	MemberID    string  `json:"member_id"`
+	Name        string  `json:"name"`
+	DisplayName string  `json:"display_name"`
+	AvatarURL   *string `json:"avatar_url"`
+	AvatarShape *string `json:"avatar_shape"`
+	AvatarColor *string `json:"avatar_color"`
+}
+
+func (s *Server) abs(u *string) *string {
+	if u == nil {
+		return nil
+	}
+	v := s.cfg.PublicBaseURL + *u
+	return &v
+}
+
+func (s *Server) payloadBot(b *botView) payloadBot {
+	return payloadBot{ID: b.ID, MemberID: b.MemberID, Name: b.Name, DisplayName: b.DisplayName,
+		AvatarURL: s.abs(b.AvatarURL), AvatarShape: b.AvatarShape, AvatarColor: b.AvatarColor}
+}
+
+func (s *Server) buildDeliveryPayload(ctx context.Context, d webhook.Delivery) ([]byte, error) {
+	b, err := loadBot(ctx, s.pool, d.BotID)
+	if err != nil {
+		return nil, webhook.ErrDrop
+	}
+	t, err := loadTeam(ctx, s.pool, b.TeamID)
+	if err != nil {
+		return nil, webhook.ErrDrop
+	}
+	team := map[string]any{"id": t.ID, "name": t.Name, "icon_url": s.abs(t.IconURL)}
+	now := jsTime(time.Now())
+	if d.Event == "ping" || d.MessageID == nil {
+		return json.Marshal(map[string]any{"event": "ping", "delivery_id": d.ID, "sent_at": now, "bot": s.payloadBot(b), "team": team})
+	}
+	m, err := s.loadMessage(ctx, s.pool, *d.MessageID)
+	if err != nil || m.Deleted {
+		return nil, webhook.ErrDrop
+	}
+	ch, err := loadChannel(ctx, s.pool, m.ChannelID)
+	if err != nil {
+		return nil, webhook.ErrDrop
+	}
+	sm, err := loadMember(ctx, s.pool, m.Sender.MemberID)
+	if err != nil {
+		return nil, err
+	}
+	names := map[string]string{}
+	for _, mm := range m.Mentions {
+		names[mm.MemberID] = mm.DisplayName
+	}
+	atts := make([]map[string]any, 0, len(m.Attachments))
+	for _, a := range m.Attachments {
+		u := s.cfg.PublicBaseURL + a.URL
+		atts = append(atts, map[string]any{"id": a.ID, "kind": a.Kind, "mime_type": a.MimeType, "size_bytes": a.SizeBytes,
+			"file_name": a.FileName, "width": a.Width, "height": a.Height, "url": u})
+	}
+	payload := map[string]any{
+		"event":       "message.mention",
+		"delivery_id": d.ID,
+		"sent_at":     now,
+		"bot":         s.payloadBot(b),
+		"team":        team,
+		"channel":     map[string]any{"id": ch.ID, "name": ch.Name},
+		"sender": map[string]any{"member_id": sm.ID, "type": sm.Type, "user_id": sm.UserID, "bot_id": sm.BotID,
+			"username": sm.Username, "display_name": sm.DisplayName, "avatar_url": s.abs(sm.AvatarURL),
+			"avatar_shape": sm.AvatarShape, "avatar_color": sm.AvatarColor},
+		"message": map[string]any{"id": m.ID, "seq": m.Seq, "content": m.Content, "content_plain": mention.Plain(m.Content, names),
+			"mentions": m.Mentions, "attachments": atts, "reply_to": m.ReplyTo, "trigger_depth": m.TriggerDepth, "created_at": m.CreatedAt},
+		"loop_guard": map[string]any{"trigger_depth": m.TriggerDepth, "max_trigger_depth": s.cfg.MaxTriggerDepth, "reply_depth_will_be": m.TriggerDepth + 1},
+		"reply": map[string]any{
+			"method":    "POST",
+			"url":       s.cfg.PublicBaseURL + "/api/v1/channels/" + ch.ID + "/messages",
+			"auth":      "Authorization: Bearer <BOT_TOKEN>",
+			"body_hint": map[string]any{"content": "<@" + sm.ID + "> …", "reply_to": m.ID},
+		},
+	}
+	return json.Marshal(payload)
+}
