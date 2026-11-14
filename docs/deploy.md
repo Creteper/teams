@@ -238,7 +238,13 @@ sudo systemctl daemon-reload && sudo systemctl enable teams
 
 #### B.7a nginx（在现有 nginx 中新增站点，推荐）
 
-只新增文件，不修改现有站点。先确认现有布局（是否用 `sites-enabled`、现有站点是否监听 IPv6、是否已有 certbot）：
+只新增文件，不修改现有站点。
+
+> **现场已核实（123.57.134.175）**：`nginx.conf` 的 http 块同时 include `conf.d/*.conf` 和 `sites-enabled/*`，`conf.d/` 原为空，`snippets/` 已存在；现有站点都监听 `80`/`[::]:80` 和 `443`/`[::]:443`（下文 IPv6 行保留）；`options-ssl-nginx.conf`、`ssl-dhparams.pem` 已存在，`certbot.timer` 已启用；启用中的站点**都没有 `default_server`**。
+>
+> 因为没有 `default_server`，nginx 会把每个端口上**第一个加载的 server 块**当默认站点（裸 IP 或未知域名访问会落到它）。`sites-enabled/*` 按文件名字母序加载，启用前用 `ls /etc/nginx/sites-enabled` 确认 `teams.lovekaifa.com` 不会排在第一个；若会排第一，改用排在后面的文件名（如 `zz-teams.lovekaifa.com`），避免改变现有站点的默认行为。
+
+先确认现有布局（是否用 `sites-enabled`、现有站点是否监听 IPv6、是否已有 certbot）：
 ```bash
 nginx -v; ls /etc/nginx/sites-enabled /etc/nginx/conf.d; which certbot
 grep -rn "listen" /etc/nginx/sites-enabled | head      # 参照现有站点的 listen 写法；没有 [::] 就删掉下文的 IPv6 listen
@@ -297,8 +303,8 @@ server {
 
     ssl_certificate     /etc/letsencrypt/live/teams.lovekaifa.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/teams.lovekaifa.com/privkey.pem;
-    include /etc/letsencrypt/options-ssl-nginx.conf;     # 若不存在，改为 ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;       # 若不存在，删掉这行
+    include /etc/letsencrypt/options-ssl-nginx.conf;     # 服务器上已存在（certbot 生成）
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
     server_tokens off;
     access_log /var/log/nginx/teams-access.log;          # 系统 logrotate 已覆盖 /var/log/nginx/*.log
