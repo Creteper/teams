@@ -21,7 +21,7 @@ import { DECLINED_SHOW_MS, botRunsReducer } from "../lib/botRuns";
 import { emptySendState, matchOutbox, newClientMsgId, sendReducer, type OutboxItem } from "../lib/outbox";
 import { BotRunBar } from "../components/BotRunBar";
 import { TeamSettingsDialog } from "../components/TeamSettingsDialog";
-import { ProfileDialog } from "../components/ProfileDialog";
+import { SettingsDialog, type SettingsTab } from "../components/settings/SettingsDialog";
 import { ConfirmDialog } from "../components/ui";
 import { channelErrorText, defaultChannel } from "../lib/channels";
 import { RenameChannelDialog } from "../components/RenameChannelDialog";
@@ -71,7 +71,8 @@ export default function TeamPage() {
   useEffect(() => () => Object.values(localPreviewsRef.current).forEach((u) => URL.revokeObjectURL(u)), []);
   const [botRuns, dispatchRuns] = useReducer(botRunsReducer, {});
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [profileOpen, setProfileOpen] = useState(false);
+  // 设置窗口：null = 关闭；"" = 从齿轮打开（窄屏先显示分类列表）；其他 = 直接打开某一页
+  const [settings, setSettings] = useState<SettingsTab | "" | null>(null);
   const [confirm, setConfirm] = useState<null | "leave" | "logout">(null);
   const [confirmPending, setConfirmPending] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
@@ -469,7 +470,7 @@ export default function TeamPage() {
 
   return (
     <div className="flex h-full overflow-hidden bg-[#313338] text-[#dbdee1]">
-      <TeamRail teams={teams} currentTeamId={teamId} onAdd={() => setDialogOpen(true)} unread={unread.summary} />
+      <TeamRail teams={teams} currentTeamId={teamId} onAdd={() => setDialogOpen(true)} onSettings={() => setSettings("")} unread={unread.summary} />
       <ChannelSidebar
         team={team}
         channels={channels}
@@ -491,7 +492,7 @@ export default function TeamPage() {
           setConfirmError(null);
           setConfirm("logout");
         }}
-        onEditProfile={() => setProfileOpen(true)}
+        onEditProfile={() => setSettings("profile")}
         myMemberId={myMemberId}
         unread={unread.map}
         onChannelAction={(c, action) => {
@@ -701,7 +702,7 @@ export default function TeamPage() {
         />
       ) : null}
 
-      {profileOpen ? <ProfileDialog onClose={() => setProfileOpen(false)} /> : null}
+      {settings !== null ? <SettingsDialog initialTab={settings || undefined} onClose={() => setSettings(null)} /> : null}
 
       {confirm === "leave" && team ? (
         <ConfirmDialog

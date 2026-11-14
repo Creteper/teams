@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Label, Switch } from "@heroui/react";
 import { api } from "../api";
 import {
@@ -20,7 +20,7 @@ type Phase = { kind: "loading" } | { kind: "hidden" } | { kind: "unsupported"; t
  * - 浏览器不支持 → 显示说明；
  * - 只有点开关时才请求通知权限。
  */
-export function PushSettings({ token, userId }: { token: string; userId: string }) {
+export function PushSettings({ token, userId, hiddenFallback = null }: { token: string; userId: string; hiddenFallback?: ReactNode }) {
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
   const [publicKey, setPublicKey] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -49,7 +49,8 @@ export function PushSettings({ token, userId }: { token: string; userId: string 
     };
   }, [token, userId]);
 
-  if (phase.kind === "hidden" || phase.kind === "loading") return null;
+  if (phase.kind === "loading") return null;
+  if (phase.kind === "hidden") return <>{hiddenFallback}</>;
 
   async function toggle(next: boolean) {
     if (!publicKey) return;
@@ -75,8 +76,8 @@ export function PushSettings({ token, userId }: { token: string; userId: string 
   }
 
   return (
-    <section className="mb-5 rounded-lg bg-[#2b2d31] p-3" aria-label="通知" data-testid="push-settings">
-      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-[#b5bac1]">通知</div>
+    <section className="rounded-lg bg-[#2b2d31] p-3" aria-label="通知" data-testid="push-settings">
+      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-[#b5bac1]">浏览器推送</div>
       {phase.kind === "unsupported" ? (
         <p className="text-sm text-[#f0b232]" role="status" data-testid="push-unsupported">
           ⚠ {phase.text}
@@ -106,7 +107,7 @@ export function PushSettings({ token, userId }: { token: string; userId: string 
       ) : null}
       {notice ? <p className="mt-2 text-xs text-[#57f287]">{notice}</p> : null}
       {/* 错误提示里已带 Chrome 国内提示时不再重复 */}
-      <p className="mt-2 text-[11px] leading-snug text-[#949ba4]">只在有人 @ 你时通知，切换后立即生效（不受下方「保存 / 取消」控制）。{error?.includes(CHROME_GFW_HINT) ? "" : CHROME_GFW_HINT}</p>
+      <p className="mt-2 text-[11px] leading-snug text-[#949ba4]">只在有人 @ 你时通知，切换后立即生效，不需要保存。{error?.includes(CHROME_GFW_HINT) ? "" : CHROME_GFW_HINT}</p>
     </section>
   );
 }

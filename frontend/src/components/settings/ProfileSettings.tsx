@@ -1,33 +1,32 @@
 import { useRef, useState } from "react";
-import { Button, Input } from "@heroui/react";
-import { useAuth, useToken } from "../auth/AuthContext";
-import { avatarDimError, avatarFileError, avatarUploadErrorText, gifSize, sniffImage } from "../lib/avatarCrop";
-import { charCount } from "../lib/text";
-import { AvatarCropDialog } from "./AvatarCropDialog";
-import { GifAvatarDialog } from "./GifAvatarDialog";
-import { PushSettings } from "./PushSettings";
-import { Field, FormError } from "./FormField";
-import { MemberAvatar } from "./MemberAvatar";
-import { Counter } from "./TeamSettingsDialog";
-import { ConfirmDialog, DialogShell } from "./ui";
+import { Button, Card, Input } from "@heroui/react";
+import { useAuth } from "../../auth/AuthContext";
+import { avatarDimError, avatarFileError, avatarUploadErrorText, gifSize, sniffImage } from "../../lib/avatarCrop";
+import { charCount } from "../../lib/text";
+import { AvatarCropDialog } from "../AvatarCropDialog";
+import { GifAvatarDialog } from "../GifAvatarDialog";
+import { Field, FormError } from "../FormField";
+import { MemberAvatar } from "../MemberAvatar";
+import { Counter } from "../TeamSettingsDialog";
+import { ConfirmDialog } from "../ui";
 
 const NAME_MAX = 64;
 
 /**
- * 编辑个人资料：
+ * 设置 → 个人资料（原「编辑个人资料」弹窗的内容，并入设置窗口）：
  * - 头像：PUT /me/avatar（选图 → 校验类型/大小 → 裁剪成正方形 → 上传）、DELETE /me/avatar（二次确认）；
  *   GIF 不裁剪不转码，原文件上传以保留动画（先读文件头检查 ≤ 4096×4096），显示时 object-fit: cover 居中裁切；
- * - 通知：「开启 @ 消息通知」（§9.4，服务器未开启推送时不显示）；
+ * （@ 消息通知开关移到了设置 →「通知」）
  * - 显示名称：PATCH /me {display_name}（1–64 字）。
  * 成功后后端向所在 team 推 member.updated，其他窗口随之更新。
  */
-export function ProfileDialog({ onClose }: { onClose(): void }) {
+export function ProfileSettings() {
   const { user, updateProfile, uploadAvatar, removeAvatar } = useAuth();
-  const token = useToken();
   const [gif, setGif] = useState<{ file: File; size: { width: number; height: number } } | null>(null);
   const [name, setName] = useState(user?.display_name ?? "");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const [avatarNotice, setAvatarNotice] = useState<string | null>(null);
   const [cropping, setCropping] = useState<{ file: File; type: string } | null>(null);
@@ -35,15 +34,18 @@ export function ProfileDialog({ onClose }: { onClose(): void }) {
   const [removing, setRemoving] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
   const n = charCount(name.trim());
+  const dirty = name.trim() !== (user?.display_name ?? "");
   const invalid = n < 1 ? "显示名称不能为空" : n > NAME_MAX ? `显示名称最多 ${NAME_MAX} 个字` : null;
 
   async function save() {
     if (invalid) return setError(invalid);
     setPending(true);
     setError(null);
+    setSaved(false);
     try {
-      if (name.trim() !== user?.display_name) await updateProfile(name.trim());
-      onClose();
+      if (dirty) await updateProfile(name.trim());
+      setName(name.trim());
+      setSaved(true);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -71,8 +73,8 @@ export function ProfileDialog({ onClose }: { onClose(): void }) {
   }
 
   return (
-    <DialogShell label="编辑个人资料" title="编辑个人资料" onClose={onClose} width="max-w-md">
-      <section className="mb-5 flex items-center gap-4" aria-label="头像">
+    <div className="flex flex-col gap-4">
+      <Card className="flex-row items-center gap-4 rounded-lg bg-[#2b2d31] p-4 shadow-none" aria-label="头像" role="group">
         {user ? <MemberAvatar member={user} size={72} /> : null}
         <div className="flex flex-1 flex-col gap-2">
           <div className="flex flex-wrap gap-2">
@@ -100,8 +102,8 @@ export function ProfileDialog({ onClose }: { onClose(): void }) {
           {avatarError ? <FormError>{avatarError}</FormError> : null}
           {avatarNotice ? <p className="text-xs text-[#57f287]">{avatarNotice}</p> : null}
         </div>
-      </section>
-      {user ? <PushSettings token={token} userId={user.id} /> : null}
+      </Card>
+      <Card className="rounded-lg bg-[#2b2d31] p-4 shadow-none">
       <form
         className="flex flex-col gap-4"
         onSubmit={(e) => {
@@ -113,18 +115,32 @@ export function ProfileDialog({ onClose }: { onClose(): void }) {
           <Input id="profile-username" value={`@${user?.username ?? ""}`} disabled />
         </Field>
         <Field id="profile-name" label={<span className="flex justify-between">显示名称 <Counter n={n} max={NAME_MAX} /></span>}>
-          <Input id="profile-name" value={name} placeholder="别人看到的名字" onChange={(e) => setName(e.target.value)} />
+          <Input
+            id="profile-name"
+            value={name}
+            placeholder="别人看到的名字"
+            onChange={(e) => {
+              setName(e.target.value);
+              setSaved(false);
+            }}
+          />
         </Field>
         {error ? <FormError>{error}</FormError> : null}
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" onPress={onClose}>
-            取消
+        <div className="flex items-center justify-end gap-2">
+          {saved && !dirty ? (
+            <span className="mr-auto text-xs text-[#57f287]" role="status">
+              已保存
+            </span>
+          ) : null}
+          <Button variant="ghost" isDisabled={!dirty} onPress={() => setName(user?.display_name ?? "")}>
+            撤销
           </Button>
-          <Button type="submit" variant="primary" isPending={pending} isDisabled={!!invalid}>
+          <Button type="submit" variant="primary" isPending={pending} isDisabled={!!invalid || !dirty}>
             保存
           </Button>
         </div>
       </form>
+      </Card>
 
       {cropping ? (
         <AvatarCropDialog
@@ -181,6 +197,6 @@ export function ProfileDialog({ onClose }: { onClose(): void }) {
           onCancel={() => setConfirmRemove(false)}
         />
       ) : null}
-    </DialogShell>
+    </div>
   );
 }

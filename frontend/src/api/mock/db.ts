@@ -41,6 +41,8 @@ export interface MockDb {
   joinSeq: Map<string, number>;
   /** 服务器是否配置了推送（§9.4 / §13）；mock 可用 localStorage teams.mock.push=off 关掉 */
   pushEnabled: boolean;
+  /** 测试用：GET /skill 返回 503 skill_unavailable */
+  skillUnavailable?: boolean;
   vapidPublicKey: string;
   /** endpoint -> 订阅 */
   pushSubscriptions: Map<string, { id: string; user_id: string; endpoint: string; created_at: string; updated_at: string }>;

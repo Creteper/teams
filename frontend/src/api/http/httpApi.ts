@@ -77,6 +77,7 @@ export function createHttpApi(): TeamsApi {
     listMyUnread: async (token) => (await request<{ items: ChannelUserState[] }>("/me/unread", { token })).items,
     getMessage: (token, messageId) => request(`/messages/${encodeURIComponent(messageId)}`, { token }),
     getVapidPublicKey: (token) => request("/push/vapid-public-key", { token }),
+    getSkill: (opts) => request("/skill", { query: { include: opts?.includeSkillMd ? "skill_md" : undefined } }),
     subscribePush: (token, sub) => request("/push/subscriptions", { method: "POST", token, body: sub }),
     unsubscribePush: (token, endpoint) => request("/push/subscriptions", { method: "DELETE", token, query: { endpoint } }),
     uploadMyAvatar: (token, file, filename) => {

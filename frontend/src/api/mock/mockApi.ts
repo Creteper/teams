@@ -549,6 +549,27 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
       return m;
     },
 
+    // §8.7 Bot 接入 skill（mock 模式用；真实后端走 GET /api/v1/skill）
+    async getSkill(opts) {
+      await delay();
+      if (db.skillUnavailable) throw err(503, "skill_unavailable", "skill 包暂不可用");
+      const base = "http://localhost:5190/api/v1";
+      const info = {
+        name: "teams-skill",
+        version: "1.0.0",
+        install_command: `npx -y ${base}/downloads/teams-skill.tgz`,
+        tgz_url: `${base}/downloads/teams-skill.tgz`,
+        versioned_url: `${base}/downloads/teams-skill-1.0.0.tgz`,
+        skill_md_url: `${base}/skill/SKILL.md`,
+        sha256: "0".repeat(64),
+        size_bytes: 12994,
+        skill_name: "teams-bot-integration",
+        install_path: ".cursor/skills/teams-bot-integration/SKILL.md",
+        skill_md_sha256: "1".repeat(64),
+      };
+      return opts?.includeSkillMd ? { ...info, skill_md: MOCK_SKILL_MD } : info;
+    },
+
     // §9.4 推送
     async getVapidPublicKey(token) {
       await delay();
@@ -787,3 +808,13 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
     return { ...a };
   }
 }
+
+const MOCK_SKILL_MD = `---
+name: teams-bot-integration
+description: （mock）把 AI agent 接入 TeAms 当 bot：webhook 载荷、bot 令牌接口、防循环。
+---
+
+# TeAms Bot 接入（mock 预览）
+
+这是 mock 模式下的示例内容，真实内容来自后端 GET /api/v1/skill?include=skill_md。
+`;

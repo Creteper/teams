@@ -128,7 +128,7 @@ export function RailTooltip({
         placement="right"
         offset={8}
         showArrow
-        className="rounded-md bg-[#111214] px-3 py-2 text-sm font-semibold whitespace-nowrap text-white shadow-lg"
+        className="pointer-events-none rounded-md bg-[#111214] px-3 py-2 text-sm font-semibold whitespace-nowrap text-white shadow-lg"
       >
         <Tooltip.Arrow className="[&_path]:fill-[#111214]" />
         {text}

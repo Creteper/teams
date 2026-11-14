@@ -10,6 +10,7 @@ import type {
   PushSubscriptionJSONBody,
   PushSubscriptionRecord,
   VapidKeyResponse,
+  SkillInfo,
   AuthResponse,
   BotRunItem,
   UpdateTeamInput,
@@ -94,6 +95,8 @@ export interface TeamsApi {
   listMyUnread(token: string): Promise<ChannelUserState[]>;
   /** GET /api/v1/messages/{message_id}：单条（?msg= 定位用） */
   getMessage(token: string, messageId: ID): Promise<Message>;
+  /** GET /api/v1/skill（§8.7，不需要登录）；includeSkillMd → ?include=skill_md，多返回 SKILL.md 原文 */
+  getSkill(opts?: { includeSkillMd?: boolean }): Promise<SkillInfo>;
   /** GET /api/v1/push/vapid-public-key */
   getVapidPublicKey(token: string): Promise<VapidKeyResponse>;
   /** POST /api/v1/push/subscriptions（body = PushSubscription.toJSON()）；未配置推送 → 503 push_disabled */

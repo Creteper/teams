@@ -9,6 +9,7 @@ import { useTeams } from "../hooks";
 import { LogoWordmark } from "../components/Logo";
 import { ConfirmDialog } from "../components/ui";
 import { roleLabel } from "../lib/roles";
+import { SettingsDialog } from "../components/settings/SettingsDialog";
 
 /** Team 列表 + 创建 + 通过邀请链接加入 */
 export default function TeamsPage() {
@@ -18,6 +19,7 @@ export default function TeamsPage() {
   const { teams, loading, reload } = useTeams(token);
   const [dialog, setDialog] = useState(false);
   const [confirmLogout, setConfirmLogout] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const onCreated = async (team: { id: string }) => {
     await reload();
     navigate(`/teams/${team.id}`);
@@ -25,7 +27,7 @@ export default function TeamsPage() {
 
   return (
     <div className="flex h-full bg-[#313338] text-[#dbdee1]">
-      <TeamRail teams={teams} onAdd={() => setDialog(true)} />
+      <TeamRail teams={teams} onAdd={() => setDialog(true)} onSettings={() => setSettingsOpen(true)} />
       <main className="flex-1 overflow-y-auto p-8">
         <div className="mx-auto max-w-4xl">
           <div className="mb-8 flex items-center justify-between">
@@ -92,6 +94,7 @@ export default function TeamsPage() {
           onCancel={() => setConfirmLogout(false)}
         />
       ) : null}
+      {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
     </div>
   );
 }

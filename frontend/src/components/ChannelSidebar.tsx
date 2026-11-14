@@ -17,7 +17,7 @@ const MENU_ITEM =
 const MENU_ITEM_DANGER =
   "min-h-8 rounded px-2 py-1.5 text-sm data-[hovered=true]:bg-[#f23f43] data-[focused=true]:bg-[#f23f43] data-[hovered=true]:[&_[data-slot=label]]:text-white data-[focused=true]:[&_[data-slot=label]]:text-white data-[disabled=true]:opacity-100 data-[disabled=true]:[&_[data-slot=label]]:opacity-40 [&_[data-slot=label]]:font-normal";
 
-const HINT_TOOLTIP = "rounded-md bg-[#111214] px-2.5 py-1.5 text-xs font-semibold text-white shadow-lg";
+const HINT_TOOLTIP = "pointer-events-none rounded-md bg-[#111214] px-2.5 py-1.5 text-xs font-semibold text-white shadow-lg";
 
 /** 第二栏：team 名 + 下拉菜单、频道列表（可新建）、底部自己 + 齿轮菜单 */
 export function ChannelSidebar({

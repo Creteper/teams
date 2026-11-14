@@ -132,6 +132,29 @@ export interface ChannelUserState {
 }
 
 /** GET /push/vapid-public-key（§9.4） */
+/** GET /api/v1/skill（§8.7，不需要登录）：Bot 接入 skill（自托管 npm 包 teams-skill）的元信息 */
+export interface SkillInfo {
+  name: string;
+  version: string;
+  /** 直接显示给用户复制，例如 `npx -y <tgz_url>` */
+  install_command: string;
+  /** 固定地址，始终是最新版 */
+  tgz_url: string;
+  /** 带版本号的地址（immutable） */
+  versioned_url: string;
+  skill_md_url: string;
+  /** tgz 的 sha256（hex） */
+  sha256: string;
+  /** tgz 字节数 */
+  size_bytes: number;
+  skill_name: string;
+  /** 例如 .cursor/skills/teams-bot-integration/SKILL.md（相对当前目录） */
+  install_path: string;
+  skill_md_sha256: string;
+  /** 只有 ?include=skill_md 时返回：SKILL.md 原文 */
+  skill_md?: string;
+}
+
 export interface VapidKeyResponse {
   enabled: boolean;
   public_key: string | null;
