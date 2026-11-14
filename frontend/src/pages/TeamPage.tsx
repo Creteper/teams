@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams } from "react-router";
 import { Spinner } from "@heroui/react";
 import { api, fetchAllMembers, realtime } from "../api";
@@ -14,6 +14,12 @@ import { TeamRail } from "../components/TeamRail";
 import { useTeams } from "../hooks";
 import { mergeMessages } from "../lib/messages";
 import { applyAttachmentUrls, chunk, idsNeedingRefresh } from "../lib/attachments";
+import { botRunsReducer } from "../lib/botRuns";
+import { newClientMsgId, type OutboxItem } from "../lib/outbox";
+import { BotRunBar } from "../components/BotRunBar";
+import { TeamSettingsDialog } from "../components/TeamSettingsDialog";
+import { ConfirmDialog } from "../components/ui";
+import type { Attachment, MessageSender } from "../api/types";
 
 /** Team 主界面（Discord 式四栏）：team 图标栏 | 频道侧栏 | 消息区 | 成员列表 */
 export default function TeamPage() {
@@ -34,6 +40,13 @@ export default function TeamPage() {
   const [olderCursor, setOlderCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [messagesLoading, setMessagesLoading] = useState(true);
+  const [outbox, setOutbox] = useState<OutboxItem[]>([]);
+  const [botRuns, dispatchRuns] = useReducer(botRunsReducer, {});
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [confirm, setConfirm] = useState<null | "leave" | "logout">(null);
+  const [confirmPending, setConfirmPending] = useState(false);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
   const maxSeqRef = useRef(0);
   const messagesRef = useRef<Message[]>([]);
   /** 附件 id -> 已知到期时间（来自刷新接口的 expires_at） */
@@ -76,6 +89,7 @@ export default function TeamPage() {
     setMessages([]);
     setHasMore(false);
     setOlderCursor(null);
+    setMessagesLoading(true);
     api
       .listMessages(token, channelId, { limit: 50 })
       .then((page) => {
@@ -86,7 +100,15 @@ export default function TeamPage() {
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (!cancelled) setMessagesLoading(false);
       });
+    // 进入频道：拉进行中的 bot 处理
+    api
+      .listActiveBotRuns(token, channelId)
+      .then((items) => !cancelled && dispatchRuns({ type: "hydrate", items, now: Date.now() }))
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
@@ -125,10 +147,10 @@ export default function TeamPage() {
     return () => clearInterval(timer);
   }, [token]);
 
-  // 图片/视频加载失败：单个刷新并重试一次
+  // 图片/视频加载失败：单个刷新（自动只重试一次；用户点“重试”时 force）
   const onMediaError = useCallback(
-    async (attachmentId: string) => {
-      if (retriedRef.current.has(attachmentId)) return;
+    async (attachmentId: string, force = false) => {
+      if (!force && retriedRef.current.has(attachmentId)) return;
       retriedRef.current.add(attachmentId);
       try {
         const u = await api.getAttachmentUrl(token, attachmentId);
@@ -145,6 +167,10 @@ export default function TeamPage() {
   useEffect(() => {
     if (!channelId) return;
     return realtime.onReady(() => {
+      api
+        .listActiveBotRuns(token, channelId)
+        .then((items) => dispatchRuns({ type: "hydrate", items, now: Date.now() }))
+        .catch(() => undefined);
       if (!maxSeqRef.current) return;
       api
         .listMessages(token, channelId, { after: maxSeqRef.current, limit: 100 })
@@ -159,8 +185,23 @@ export default function TeamPage() {
       if (frame.team_id && frame.team_id !== teamId) return;
       switch (frame.type) {
         case "message.created":
+          dispatchRuns({ type: "message", message: frame.data });
+          if (frame.data.channel_id === channelId) setMessages((prev) => mergeMessages(prev, [frame.data]));
+          break;
         case "message.updated":
           if (frame.data.channel_id === channelId) setMessages((prev) => mergeMessages(prev, [frame.data]));
+          break;
+        case "bot.run.started":
+        case "bot.run.delivered":
+        case "bot.run.retrying":
+        case "bot.run.failed":
+        case "bot.run.completed":
+          dispatchRuns({
+            type: "event",
+            event: frame.type.slice("bot.run.".length) as "started",
+            data: frame.data,
+            now: Date.now(),
+          });
           break;
         case "message.deleted":
           setMessages((prev) =>
@@ -187,7 +228,13 @@ export default function TeamPage() {
           if (frame.data.id === channelId) navigate(`/teams/${teamId}`, { replace: true });
           break;
         case "team.updated":
-          if (frame.data.id === teamId) setTeam(frame.data);
+          // 只合并公共字段，my_role / my_member_id 保留本地（推送给全员的对象不一定是“我”的视角）
+          if (frame.data.id === teamId)
+            setTeam((prev) =>
+              prev
+                ? { ...prev, name: frame.data.name, description: frame.data.description, icon_url: frame.data.icon_url }
+                : frame.data,
+            );
           break;
         case "team.deleted":
         case "team.removed":
@@ -198,6 +245,60 @@ export default function TeamPage() {
     });
   }, [teamId, channelId, navigate]);
 
+  // 90 秒兜底：每 5 秒检查一次
+  useEffect(() => {
+    const t = setInterval(() => dispatchRuns({ type: "tick", now: Date.now() }), 5000);
+    return () => clearInterval(t);
+  }, []);
+
+  // 切频道时清掉本地待发送
+  useEffect(() => {
+    setOutbox((prev) => prev.filter((o) => o.status === "failed" || o.channel_id === channelId));
+  }, [channelId]);
+
+  /** 发送（只走 REST）：先乐观显示，失败标记可重发/删除；client_msg_id 重发时不变，后端幂等 */
+  const deliver = useCallback(
+    async (item: OutboxItem) => {
+      setOutbox((prev) => prev.map((o) => (o.local_id === item.local_id ? { ...o, status: "sending", error: undefined } : o)));
+      try {
+        const msg = await api.sendMessage(token, item.channel_id, {
+          content: item.content,
+          attachment_ids: item.attachments.map((a) => a.id),
+          client_msg_id: item.client_msg_id,
+        });
+        setOutbox((prev) => prev.filter((o) => o.local_id !== item.local_id));
+        setMessages((prev) => (msg.channel_id === channelId ? mergeMessages(prev, [msg]) : prev));
+        const bots = msg.mentions.filter((m) => m.type === "bot").map((m) => m.member_id);
+        if (bots.length)
+          dispatchRuns({ type: "optimistic", trigger_message_id: msg.id, channel_id: msg.channel_id, bot_member_ids: bots, now: Date.now() });
+      } catch (e) {
+        setOutbox((prev) =>
+          prev.map((o) => (o.local_id === item.local_id ? { ...o, status: "failed", error: e instanceof Error ? e.message : String(e) } : o)),
+        );
+      }
+    },
+    [token, channelId],
+  );
+
+  async function runConfirm() {
+    setConfirmPending(true);
+    setConfirmError(null);
+    try {
+      if (confirm === "leave") {
+        await api.leaveTeam(token, teamId);
+        await reloadTeams();
+        navigate("/teams", { replace: true });
+      } else if (confirm === "logout") {
+        await logout();
+      }
+      setConfirm(null);
+    } catch (e) {
+      setConfirmError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setConfirmPending(false);
+    }
+  }
+
   if (!user) return null;
   if (!channelId && channels.length > 0 && channels[0].team_id === teamId) {
     const general = channels.find((c) => c.name === "general") ?? channels[0];
@@ -206,6 +307,18 @@ export default function TeamPage() {
   const channel = channels.find((c) => c.id === channelId);
   const myMemberId = team?.my_member_id ?? "";
   const canManage = team?.my_role === "owner" || team?.my_role === "admin";
+  const me = members.find((m) => m.id === myMemberId);
+  const mySender: MessageSender = {
+    member_id: myMemberId,
+    type: "user",
+    display_name: me?.display_name ?? user.display_name,
+    avatar_url: me?.avatar_url ?? user.avatar_url,
+    avatar_shape: null,
+    avatar_color: null,
+  };
+  const channelRuns = Object.values(botRuns)
+    .filter((r) => r.channel_id === channelId)
+    .sort((a, b) => a.startedAt - b.startedAt);
 
   return (
     <div className="flex h-full overflow-hidden bg-[#313338] text-[#dbdee1]">
@@ -215,13 +328,22 @@ export default function TeamPage() {
         channels={channels}
         currentChannelId={channelId}
         me={user}
+        canManage={canManage}
         onCreateChannel={async (name) => {
           const c = await api.createChannel(token, teamId, { name });
           setChannels((prev) => (prev.some((x) => x.id === c.id) ? prev : [...prev, c]));
           navigate(`/teams/${teamId}/channels/${c.id}`);
         }}
-        onLogout={() => void logout()}
-        onInvite={canManage ? () => setInviteOpen(true) : undefined}
+        onInvite={() => setInviteOpen(true)}
+        onSettings={() => setSettingsOpen(true)}
+        onLeave={() => {
+          setConfirmError(null);
+          setConfirm("leave");
+        }}
+        onLogout={() => {
+          setConfirmError(null);
+          setConfirm("logout");
+        }}
       />
 
       <main className="flex min-w-0 flex-1 flex-col">
@@ -244,25 +366,42 @@ export default function TeamPage() {
           <>
             <MessageList
               messages={messages}
+              outbox={outbox.filter((o) => o.channel_id === channel.id)}
               members={members}
               myMemberId={myMemberId}
+              channel={channel}
+              initialLoading={messagesLoading}
               hasMore={hasMore}
               loadingOlder={loadingOlder}
               onLoadOlder={loadOlder}
-              onMediaError={onMediaError}
+              onMediaError={(id) => void onMediaError(id)}
+              onMediaRetry={(id) => void onMediaError(id, true)}
+              onRetrySend={(localId) => {
+                const item = outbox.find((o) => o.local_id === localId);
+                if (item) void deliver(item);
+              }}
+              onDiscard={(localId) => setOutbox((prev) => prev.filter((o) => o.local_id !== localId))}
             />
             <Composer
+              key={channel.id}
               channelName={channel.name}
               members={members.filter((m) => m.id !== myMemberId)}
-              onUpload={(file) => api.uploadAttachment(token, teamId, file)}
-              onSend={async ({ content, attachments }) => {
-                // 发消息只走 REST（§8.2）；client_msg_id 作幂等键
-                const msg = await api.sendMessage(token, channel.id, {
+              status={<BotRunBar runs={channelRuns} members={members} onDismiss={(key) => dispatchRuns({ type: "dismiss", key })} />}
+              onUpload={(file, opts) => api.uploadAttachment(token, teamId, file, opts)}
+              onSend={({ content, attachments, mentionIds }) => {
+                const item: OutboxItem = {
+                  local_id: `local-${crypto.randomUUID()}`,
+                  channel_id: channel.id,
                   content,
-                  attachment_ids: attachments.map((a) => a.id),
-                  client_msg_id: `c-${crypto.randomUUID()}`,
-                });
-                setMessages((prev) => mergeMessages(prev, [msg]));
+                  attachments: attachments as Attachment[],
+                  client_msg_id: newClientMsgId(),
+                  status: "sending",
+                  created_at: new Date().toISOString(),
+                  sender: mySender,
+                  bot_member_ids: members.filter((m) => m.type === "bot" && mentionIds.includes(m.id)).map((m) => m.id),
+                };
+                setOutbox((prev) => [...prev, item]);
+                void deliver(item);
               }}
             />
           </>
@@ -273,12 +412,48 @@ export default function TeamPage() {
 
       <MemberList members={members} onInvite={canManage ? () => setInviteOpen(true) : undefined} />
 
-      {inviteOpen && team ? (
+      {inviteOpen && team && canManage ? (
         <InviteDialog
           token={token}
           team={team}
           onClose={() => setInviteOpen(false)}
           onMemberAdded={(m) => setMembers((prev) => [...prev.filter((x) => x.id !== m.id), m])}
+        />
+      ) : null}
+
+      {settingsOpen && team && canManage ? (
+        <TeamSettingsDialog
+          token={token}
+          team={team}
+          onClose={() => setSettingsOpen(false)}
+          onSaved={(t) => {
+            setTeam((prev) => (prev ? { ...prev, name: t.name, description: t.description, icon_url: t.icon_url } : t));
+            setSettingsOpen(false);
+            void reloadTeams();
+          }}
+        />
+      ) : null}
+
+      {confirm === "leave" && team ? (
+        <ConfirmDialog
+          title={`退出「${team.name}」`}
+          message={<>确定要退出这个 team 吗？退出后需要重新被邀请才能回来。</>}
+          confirmText="退出 Team"
+          pending={confirmPending}
+          error={confirmError}
+          onConfirm={() => void runConfirm()}
+          onCancel={() => setConfirm(null)}
+        />
+      ) : null}
+      {confirm === "logout" ? (
+        <ConfirmDialog
+          title="退出登录"
+          message={<>确定要退出登录吗？</>}
+          confirmText="退出登录"
+          pending={confirmPending}
+          error={confirmError}
+          onConfirm={() => void runConfirm()}
+          onCancel={() => setConfirm(null)}
         />
       ) : null}
 

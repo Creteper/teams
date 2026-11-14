@@ -1,9 +1,10 @@
 import { useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router";
-import { Button, Input, Label } from "@heroui/react";
+import { Button, Input } from "@heroui/react";
 import { useAuth } from "../auth/AuthContext";
 import { AuthLayout } from "./AuthLayout";
 import { safeRedirect, withRedirect } from "../lib/invite";
+import { Field, FormError, PasswordInput } from "../components/FormField";
 
 export default function RegisterPage() {
   const { user, register } = useAuth();
@@ -21,6 +22,11 @@ export default function RegisterPage() {
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
+    if (busy) return;
+    if (!/^[a-z0-9_]{3,32}$/.test(username.trim().toLowerCase())) {
+      setError("用户名需 3–32 位，只能包含小写字母、数字和下划线");
+      return;
+    }
     if (password.length < 8) {
       setError("密码至少 8 位");
       return;
@@ -43,35 +49,33 @@ export default function RegisterPage() {
 
   return (
     <AuthLayout title="创建账号" subtitle="注册后即可创建或加入 Team">
-      <form className="flex flex-col gap-3" onSubmit={onSubmit}>
-        <Label htmlFor="reg-username">用户名</Label>
-        <Input id="reg-username" autoComplete="username" value={username} onChange={(e) => setUsername(e.target.value)} />
-        <p className="text-xs text-[#949ba4]">3–32 位，小写字母、数字和 _ . -</p>
-        <Label htmlFor="reg-display">显示名称</Label>
-        <Input id="reg-display" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
-        <Label htmlFor="reg-password">密码</Label>
-        <Input
-          id="reg-password"
-          type="password"
-          autoComplete="new-password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
-        <Label htmlFor="reg-confirm">确认密码</Label>
-        <Input
-          id="reg-confirm"
-          type="password"
-          autoComplete="new-password"
-          value={confirm}
-          onChange={(e) => setConfirm(e.target.value)}
-        />
-        {error ? <p className="text-sm text-[#f23f43]">{error}</p> : null}
-        <Button type="submit" variant="primary" fullWidth isPending={busy} isDisabled={!username || !password}>
-          注册
+      <form className="flex flex-col gap-5" onSubmit={onSubmit} noValidate>
+        {error ? <FormError>{error}</FormError> : null}
+        <Field id="reg-username" label="用户名" hint="3–32 位小写字母、数字或下划线，注册后不能修改">
+          <Input
+            id="reg-username"
+            autoComplete="username"
+            placeholder="例如：alice_01"
+            value={username}
+            autoFocus
+            onChange={(e) => setUsername(e.target.value)}
+          />
+        </Field>
+        <Field id="reg-display" label="显示名称" hint="别人看到的名字，可留空（默认用用户名）">
+          <Input id="reg-display" placeholder="例如：Alice" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
+        </Field>
+        <Field id="reg-password" label="密码">
+          <PasswordInput id="reg-password" autoComplete="new-password" placeholder="至少 8 位" value={password} onChange={setPassword} />
+        </Field>
+        <Field id="reg-confirm" label="确认密码">
+          <PasswordInput id="reg-confirm" autoComplete="new-password" placeholder="再输入一次密码" value={confirm} onChange={setConfirm} />
+        </Field>
+        <Button type="submit" variant="primary" fullWidth isPending={busy} className="mt-1">
+          {busy ? "注册中…" : "注册"}
         </Button>
-        <p className="text-sm text-[#949ba4]">
+        <p className="text-center text-sm text-[#949ba4]">
           已有账号？
-          <Link to={params.get("redirect") ? withRedirect("/login", target) : "/login"} className="text-[#00a8fc] hover:underline">
+          <Link to={params.get("redirect") ? withRedirect("/login", target) : "/login"} className="ml-1 text-brand-light hover:underline">
             登录
           </Link>
         </p>

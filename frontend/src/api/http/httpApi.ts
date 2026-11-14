@@ -1,7 +1,8 @@
 import type { TeamsApi } from "../client";
 import { API_BASE_URL, API_PREFIX } from "../config";
 import { ApiError } from "../errors";
-import type { ApiErrorBody, AttachmentUrl } from "../types";
+import type { ApiErrorBody, Attachment, AttachmentUrl, BotRunItem } from "../types";
+import type { UploadOptions } from "../client";
 
 /**
  * 真实后端实现：fetch + `Authorization: Bearer <SESSION_TOKEN>`，路径按 docs/api.md。
@@ -51,6 +52,8 @@ export function createHttpApi(): TeamsApi {
     listTeams: (token) => request("/teams", { token }),
     createTeam: (token, input) => request("/teams", { method: "POST", token, body: input }),
     getTeam: (token, teamId) => request(`/teams/${encodeURIComponent(teamId)}`, { token }),
+    updateTeam: (token, teamId, input) => request(`/teams/${encodeURIComponent(teamId)}`, { method: "PATCH", token, body: input }),
+    leaveTeam: (token, teamId) => request(`/teams/${encodeURIComponent(teamId)}/members/me`, { method: "DELETE", token }),
 
     listMembers: (token, teamId, query = {}) =>
       request(`/teams/${encodeURIComponent(teamId)}/members`, { token, query: { limit: query.limit, cursor: query.cursor } }),
@@ -69,10 +72,14 @@ export function createHttpApi(): TeamsApi {
     sendMessage: (token, channelId, input) =>
       request(`/channels/${encodeURIComponent(channelId)}/messages`, { method: "POST", token, body: input }),
 
-    uploadAttachment: (token, teamId, file) => {
-      const form = new FormData();
-      form.append("file", file);
-      return request(`/teams/${encodeURIComponent(teamId)}/attachments`, { method: "POST", token, body: form });
+    uploadAttachment: (token, teamId, file, opts) =>
+      uploadWithProgress(`${API_BASE_URL}${API_PREFIX}/teams/${encodeURIComponent(teamId)}/attachments`, token, file, opts),
+    listActiveBotRuns: async (token, channelId) => {
+      const res = await request<{ items: BotRunItem[] }>(`/channels/${encodeURIComponent(channelId)}/bot-runs`, {
+        token,
+        query: { active: "true" },
+      });
+      return res.items;
     },
     previewInvite: (code) => request(`/invites/${encodeURIComponent(code)}`),
     acceptInvite: (token, code) => request(`/invites/${encodeURIComponent(code)}/accept`, { method: "POST", token }),
@@ -83,9 +90,35 @@ export function createHttpApi(): TeamsApi {
       request(`/teams/${encodeURIComponent(teamId)}/invites/${encodeURIComponent(inviteId)}`, { method: "DELETE", token }),
     getAttachmentUrl: (token, id) => request(`/attachments/${encodeURIComponent(id)}`, { token }),
     refreshAttachmentUrls: async (token, ids) => {
-      // 响应形状按 {items:[{id,url,expires_at}]} 处理（待文档确认）
-      const res = await request<{ items: AttachmentUrl[] }>("/attachments/urls", { method: "POST", token, body: { ids } });
+      // docs/api.md §6.2：{items: Attachment[], missing: id[]}；这里只用 id/url/expires_at
+      const res = await request<{ items: AttachmentUrl[]; missing?: string[] }>("/attachments/urls", { method: "POST", token, body: { ids } });
       return res.items;
     },
   };
+}
+
+/** XMLHttpRequest 上传：upload.onprogress 报进度，AbortSignal → xhr.abort() */
+function uploadWithProgress(url: string, token: string, file: File, opts: UploadOptions = {}): Promise<Attachment> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    xhr.responseType = "json";
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) opts.onProgress?.(e.loaded / e.total);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response as Attachment);
+      else reject(ApiError.fromBody(xhr.status, xhr.response as Partial<ApiErrorBody> | null, `HTTP ${xhr.status}`));
+    };
+    xhr.onerror = () => reject(new ApiError(0, "network_error", "上传失败：网络错误"));
+    xhr.onabort = () => reject(new DOMException("上传已取消", "AbortError"));
+    if (opts.signal) {
+      if (opts.signal.aborted) return reject(new DOMException("上传已取消", "AbortError"));
+      opts.signal.addEventListener("abort", () => xhr.abort(), { once: true });
+    }
+    const form = new FormData();
+    form.append("file", file);
+    xhr.send(form);
+  });
 }

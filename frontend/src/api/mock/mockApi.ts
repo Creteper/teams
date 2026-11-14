@@ -204,7 +204,8 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
     async login(input) {
       await delay();
       const user = [...db.users.values()].find((u) => u.username === input.username.trim().toLowerCase());
-      if (!user || !input.password) throw err(401, "unauthorized", "用户名或密码错误");
+      // mock：密码填 wrong 模拟登录失败（mock 不保存、不校验真实密码）
+      if (!user || !input.password || input.password === "wrong") throw err(401, "unauthorized", "用户名或密码错误");
       return issue(user);
     },
 
@@ -262,6 +263,48 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
       const user = authed(token);
       const me = requireMember(user, teamId);
       return view(db.teams.get(teamId)!, me);
+    },
+
+    async updateTeam(token, teamId, input) {
+      await delay();
+      const me = requireMember(authed(token), teamId);
+      if (me.role !== "owner" && me.role !== "admin") throw err(403, "forbidden", "只有所有者和管理员可以修改 team");
+      const rec = db.teams.get(teamId)!;
+      if (input.name !== undefined) {
+        const name = input.name.trim();
+        if ([...name].length < 1 || [...name].length > 50) throw err(400, "validation_failed", "名称需 1–50 个字", { field: "name" });
+        rec.name = name;
+      }
+      if (input.description !== undefined) {
+        const d = input.description.trim();
+        if ([...d].length > 500) throw err(400, "validation_failed", "简介最多 500 个字", { field: "description" });
+        rec.description = d;
+      }
+      const v = view(rec, me);
+      emit(db, { type: "team.updated", team_id: teamId, data: v });
+      return v;
+    },
+
+    async leaveTeam(token, teamId) {
+      await delay();
+      const user = authed(token);
+      const me = requireMember(user, teamId);
+      if (me.role === "owner") throw err(409, "owner_cannot_leave", "所有者不能退出 team");
+      db.members = db.members.filter((m) => m.id !== me.id);
+      emit(db, { type: "team.removed", team_id: teamId, data: { team_id: teamId } }, { only: user.id });
+      emit(db, { type: "member.left", team_id: teamId, data: { member_id: me.id } }, { except: user.id });
+    },
+
+    async listActiveBotRuns(token, channelId) {
+      await delay();
+      const user = authed(token);
+      const channel = db.channels.get(channelId);
+      if (!channel) throw err(404, "not_found", "频道不存在");
+      requireMember(user, channel.team_id);
+      const since = Date.now() - 10 * 60_000;
+      return db.botRuns.filter(
+        (r) => r.channel_id === channelId && ["started", "delivered", "retrying"].includes(r.status) && Date.parse(r.started_at) >= since,
+      );
     },
 
     async listMembers(token, teamId, query = {}) {
@@ -353,6 +396,8 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
         throw err(400, "validation_failed", "content 和 attachment_ids 不能同时为空", { field: "content" });
       }
       if (input.content.length > 8000) throw err(400, "validation_failed", "content 最长 8000 字符");
+      // mock：正文含 [fail] 模拟发送失败（演示失败标记、重发、删除）
+      if (input.content.includes("[fail]")) throw err(503, "internal", "服务暂时不可用（mock 模拟发送失败）");
       if (input.attachment_ids.length > 10) throw err(400, "validation_failed", "attachment_ids 最多 10 个");
       if (input.client_msg_id !== undefined) {
         if (!CLIENT_MSG_ID_RE.test(input.client_msg_id)) {
@@ -398,9 +443,19 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
       return message;
     },
 
-    async uploadAttachment(token, teamId, file) {
-      await delay();
+    async uploadAttachment(token, teamId, file, opts = {}) {
       requireMember(authed(token), teamId);
+      // mock：按文件大小模拟上传进度（约 1.5–4 秒），支持 AbortSignal 取消
+      if (latency > 0 || opts.onProgress) {
+        const steps = 20;
+        const stepMs = latency > 0 ? Math.min(200, 75 + file.size / 200_000) : 0;
+        for (let i = 1; i <= steps; i++) {
+          if (opts.signal?.aborted) throw new DOMException("上传已取消", "AbortError");
+          await new Promise((r) => setTimeout(r, stepMs));
+          if (opts.signal?.aborted) throw new DOMException("上传已取消", "AbortError");
+          opts.onProgress?.(i / steps);
+        }
+      }
       const check = checkUpload(file);
       if (!check.ok) {
         const tooLarge = check.reason.includes("超过");

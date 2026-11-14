@@ -234,3 +234,98 @@ describe("mock 邀请链接", () => {
     expect(await api.previewInvite(forever.code)).toMatchObject({ valid: false, reason: "revoked" });
   });
 });
+
+describe("mock team 设置 / 退出 / bot 处理状态 / 上传进度", () => {
+  async function loginAs(api: ReturnType<typeof createMockApi>, role: "owner" | "admin" | "member") {
+    const owner = await api.login({ username: "alice", password: "x" });
+    const members = (await api.listMembers(owner.token, IDS.tDev)).items;
+    const m = members.find((x) => x.type === "user" && x.role === role)!;
+    return api.login({ username: m.username, password: "x" });
+  }
+
+  it("PATCH team：仅所有者/管理员，名称 1–50、简介 ≤500（Unicode 计数，去首尾空白），推送 team.updated", async () => {
+    const { db, api } = setup();
+    const frames: ServerFrame[] = [];
+    db.listeners.add((f) => frames.push(f));
+    const owner = await loginAs(api, "owner");
+    const t = await api.updateTeam(owner.token, IDS.tDev, { name: "  新名字👍  ", description: "  简介  " });
+    expect(t).toMatchObject({ name: "新名字👍", description: "简介" });
+    expect(frames.some((f) => f.type === "team.updated" && f.data.name === "新名字👍")).toBe(true);
+    await expect(api.updateTeam(owner.token, IDS.tDev, { name: "   " })).rejects.toMatchObject({ code: "validation_failed" });
+    await expect(api.updateTeam(owner.token, IDS.tDev, { name: "字".repeat(51) })).rejects.toMatchObject({ code: "validation_failed" });
+    expect((await api.updateTeam(owner.token, IDS.tDev, { name: "😀".repeat(50) })).name).toBe("😀".repeat(50));
+    await expect(api.updateTeam(owner.token, IDS.tDev, { description: "x".repeat(501) })).rejects.toMatchObject({ code: "validation_failed" });
+    const member = await loginAs(api, "member");
+    await expect(api.updateTeam(member.token, IDS.tDev, { name: "x" })).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("退出 team：所有者 409 owner_cannot_leave；成员退出后本人收 team.removed，其他人收 member.left", async () => {
+    const { db, api } = setup();
+    const owner = await loginAs(api, "owner");
+    await expect(api.leaveTeam(owner.token, IDS.tDev)).rejects.toMatchObject({ status: 409, code: "owner_cannot_leave" });
+    const member = await loginAs(api, "member");
+    const mRt = createMockRealtime(db, { pushIntervalMs: 0 });
+    const oRt = createMockRealtime(db, { pushIntervalMs: 0 });
+    const mFrames: string[] = [];
+    const oFrames: string[] = [];
+    mRt.subscribe((f) => mFrames.push(f.type));
+    oRt.subscribe((f) => oFrames.push(f.type));
+    mRt.connect(member.token);
+    oRt.connect(owner.token);
+    await api.leaveTeam(member.token, IDS.tDev);
+    expect(mFrames).toContain("team.removed");
+    expect(mFrames).not.toContain("member.left");
+    expect(oFrames).toContain("member.left");
+    expect((await api.listTeams(member.token)).items.some((t) => t.id === IDS.tDev)).toBe(false);
+    mRt.disconnect();
+    oRt.disconnect();
+  });
+
+  it("bot.run.*：正常 started→delivered→completed(reply_message_id)；未配 webhook 的 bot failed(no_webhook)", async () => {
+    const { db, api } = setup();
+    const rt = createMockRealtime(db, { botReplyMs: 0, pushIntervalMs: 0 });
+    const frames: ServerFrame[] = [];
+    rt.subscribe((f) => frames.push(f));
+    const { token } = await api.login({ username: "alice", password: "x" });
+    rt.connect(token);
+    const msg = await api.sendMessage(token, IDS.cGeneral, { content: `<@${IDS.mHelper}> <@${IDS.mDeploy}> 看下`, attachment_ids: [] });
+    await new Promise((r) => setTimeout(r, 20));
+    const runs = frames.filter((f) => f.type.startsWith("bot.run."));
+    const ok = runs.filter((f) => "bot_member_id" in f.data && f.data.bot_member_id === IDS.mHelper).map((f) => f.type);
+    expect(ok).toEqual(["bot.run.started", "bot.run.delivered", "bot.run.completed"]);
+    const done = runs.find((f) => f.type === "bot.run.completed");
+    if (done?.type === "bot.run.completed") {
+      expect(done.data.trigger_message_id).toBe(msg.id);
+      expect(done.data.team_id).toBe(IDS.tDev);
+      const reply = db.messages.find((m) => m.id === done.data.reply_message_id)!;
+      expect(reply.reply_to).toBe(msg.id);
+    }
+    const failed = runs.filter((f) => "bot_member_id" in f.data && f.data.bot_member_id === IDS.mDeploy);
+    expect(failed.map((f) => f.type)).toEqual(["bot.run.failed"]);
+    if (failed[0].type === "bot.run.failed") expect(failed[0].data.reason).toBe("no_webhook");
+    // 都结束了：进行中列表为空
+    expect(await api.listActiveBotRuns(token, IDS.cGeneral)).toEqual([]);
+    rt.disconnect();
+  });
+
+  it("上传进度回调 + AbortSignal 取消", async () => {
+    const { api } = setup();
+    const { token } = await api.login({ username: "alice", password: "x" });
+    const png = new File([new Uint8Array(16)], "a.png", { type: "image/png" });
+    const progress: number[] = [];
+    await api.uploadAttachment(token, IDS.tDev, png, { onProgress: (p) => progress.push(p) });
+    expect(progress.at(-1)).toBe(1);
+    const c = new AbortController();
+    c.abort();
+    await expect(api.uploadAttachment(token, IDS.tDev, png, { signal: c.signal, onProgress: () => undefined })).rejects.toMatchObject({
+      name: "AbortError",
+    });
+  });
+
+  it("登录密码 wrong / 正文含 [fail] 时模拟失败（截图演示用）", async () => {
+    const { api } = setup();
+    await expect(api.login({ username: "alice", password: "wrong" })).rejects.toMatchObject({ status: 401 });
+    const { token } = await api.login({ username: "alice", password: "x" });
+    await expect(api.sendMessage(token, IDS.cGeneral, { content: "hi [fail]", attachment_ids: [] })).rejects.toBeInstanceOf(ApiError);
+  });
+});

@@ -4,6 +4,8 @@ import type {
   AcceptInviteResponse,
   AttachmentUrl,
   AuthResponse,
+  BotRunItem,
+  UpdateTeamInput,
   CreateInviteInput,
   Invite,
   InvitePreview,
@@ -45,6 +47,10 @@ export interface TeamsApi {
   createTeam(token: string, input: CreateTeamInput): Promise<Team>;
   /** GET /api/v1/teams/{team_id} */
   getTeam(token: string, teamId: ID): Promise<Team>;
+  /** PATCH /api/v1/teams/{team_id}（owner/admin）{name?, description?} */
+  updateTeam(token: string, teamId: ID, input: UpdateTeamInput): Promise<Team>;
+  /** DELETE /api/v1/teams/{team_id}/members/me；所有者 → 409 owner_cannot_leave */
+  leaveTeam(token: string, teamId: ID): Promise<void>;
 
   /** GET /api/v1/teams/{team_id}/members?limit&cursor（分页，见 fetchAllMembers） */
   listMembers(token: string, teamId: ID, query?: MemberPageQuery): Promise<Page<Member>>;
@@ -61,8 +67,10 @@ export interface TeamsApi {
   /** POST /api/v1/channels/{channel_id}/messages */
   sendMessage(token: string, channelId: ID, input: SendMessageInput): Promise<Message>;
 
-  /** POST /api/v1/teams/{team_id}/attachments（multipart，字段 file） */
-  uploadAttachment(token: string, teamId: ID, file: File): Promise<Attachment>;
+  /** POST /api/v1/teams/{team_id}/attachments（multipart，字段 file）；支持进度和取消 */
+  uploadAttachment(token: string, teamId: ID, file: File, opts?: UploadOptions): Promise<Attachment>;
+  /** GET /api/v1/channels/{channel_id}/bot-runs?active=true → {items}（10 分钟内进行中的） */
+  listActiveBotRuns(token: string, channelId: ID): Promise<BotRunItem[]>;
   /** GET /api/v1/invites/{code}（无需登录）；不存在 → 404 invite_not_found */
   previewInvite(code: string): Promise<InvitePreview>;
   /** POST /api/v1/invites/{code}/accept；失效 → 410 invite_expired/invite_revoked/invite_exhausted */
@@ -91,6 +99,12 @@ export async function fetchAllMembers(api: TeamsApi, token: string, teamId: ID, 
     cursor = page.next_cursor;
   }
   return all;
+}
+
+export interface UploadOptions {
+  /** 0..1 */
+  onProgress?(fraction: number): void;
+  signal?: AbortSignal;
 }
 
 export type FrameHandler = (frame: ServerFrame) => void;

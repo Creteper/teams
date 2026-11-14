@@ -1,12 +1,15 @@
 import type { Member } from "../api/types";
+import { roleLabel } from "../lib/roles";
 import { BotBadge, MemberAvatar } from "./MemberAvatar";
+import { CrownIcon } from "./ui";
 
 /**
- * 右侧成员列表：按“成员 / Bot”分组，bot 名字旁带 BOT 标记（文档无在线状态，不显示）。
- * owner/admin 显示“邀请成员”（弹窗内含邀请链接和按用户名添加）。
+ * 右侧成员列表：按“成员 / Bot”分组；所有者带皇冠，管理员名字用另一种颜色；bot 带 BOT 标记。
+ * 所有者/管理员才显示“邀请成员”。
  */
 export function MemberList({ members, onInvite }: { members: Member[]; onInvite?: () => void }) {
-  const users = members.filter((m) => m.type === "user");
+  const order = { owner: 0, admin: 1, member: 2, bot: 3 } as const;
+  const users = members.filter((m) => m.type === "user").sort((a, b) => order[a.role] - order[b.role]);
   const bots = members.filter((m) => m.type === "bot");
   return (
     <aside aria-label="成员列表" className="hidden w-60 shrink-0 overflow-y-auto bg-[#2b2d31] px-2 py-4 lg:block">
@@ -14,7 +17,7 @@ export function MemberList({ members, onInvite }: { members: Member[]; onInvite?
         <button
           type="button"
           onClick={onInvite}
-          className="mb-4 w-full rounded px-2 py-1.5 text-left text-sm text-[#b5bac1] hover:bg-[#35373c] hover:text-white"
+          className="mb-4 w-full rounded px-2 py-1.5 text-left text-sm text-brand-light hover:bg-[#35373c] hover:text-white"
         >
           ＋ 邀请成员
         </button>
@@ -24,8 +27,6 @@ export function MemberList({ members, onInvite }: { members: Member[]; onInvite?
     </aside>
   );
 }
-
-const ROLE_LABEL: Record<string, string> = { owner: "所有者", admin: "管理员" };
 
 function Group({ title, items }: { title: string; items: Member[] }) {
   if (items.length === 0) return null;
@@ -37,13 +38,23 @@ function Group({ title, items }: { title: string; items: Member[] }) {
           <li
             key={m.id}
             data-type={m.type}
-            title={`@${m.username}`}
+            data-role={m.role}
+            title={`@${m.username}${m.type === "user" ? ` · ${roleLabel(m.role)}` : ""}`}
             className="flex items-center gap-3 rounded px-2 py-1.5 hover:bg-[#35373c]"
           >
             <MemberAvatar member={m} size={32} />
-            <span className="truncate text-[15px] text-[#dbdee1]">{m.display_name}</span>
+            <span
+              className={`truncate text-[15px] ${
+                m.role === "owner" ? "font-medium text-[#f0b232]" : m.role === "admin" ? "font-medium text-brand-light" : "text-[#dbdee1]"
+              }`}
+            >
+              {m.display_name}
+            </span>
+            {m.role === "owner" ? <CrownIcon /> : null}
+            {m.role === "admin" ? (
+              <span className="rounded bg-brand-soft px-1 text-[10px] font-semibold text-brand-light">{roleLabel("admin")}</span>
+            ) : null}
             {m.type === "bot" ? <BotBadge /> : null}
-            {ROLE_LABEL[m.role] ? <span className="text-[11px] text-[#f0b232]">{ROLE_LABEL[m.role]}</span> : null}
           </li>
         ))}
       </ul>

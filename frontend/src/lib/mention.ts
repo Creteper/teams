@@ -109,3 +109,19 @@ export function toPlainText(content: string, lookup: (id: string) => string | un
     .map((p) => (p.type === "text" ? p.text : `@${p.name}`))
     .join("");
 }
+
+export type MentionKeyAction = { type: "move"; index: number } | { type: "pick"; index: number } | { type: "close" } | null;
+
+/**
+ * @ 补全弹层的键盘处理（纯函数）：↑/↓ 循环移动，Enter/Tab 选中，Esc 关闭。
+ * count=0（“没有匹配的成员”）时只响应 Esc，Enter 交给发送逻辑。
+ */
+export function mentionKeyAction(key: string, count: number, index: number): MentionKeyAction {
+  if (key === "Escape") return { type: "close" };
+  if (count <= 0) return null;
+  const i = Math.min(Math.max(index, 0), count - 1);
+  if (key === "ArrowDown") return { type: "move", index: (i + 1) % count };
+  if (key === "ArrowUp") return { type: "move", index: (i - 1 + count) % count };
+  if (key === "Enter" || key === "Tab") return { type: "pick", index: i };
+  return null;
+}

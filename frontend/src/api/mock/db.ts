@@ -1,4 +1,4 @@
-import type { Attachment, Channel, Invite, Member, Message, ServerFrame, Team, User } from "../types";
+import type { Attachment, BotRunItem, Channel, Invite, Member, Message, ServerFrame, Team, User } from "../types";
 
 /**
  * Mock 内存数据库（刷新即重置），数据形状与 docs/api.md 一致。
@@ -27,6 +27,9 @@ export interface MockDb {
   /** 事件总线；audience 用于模拟“只发给某人 / 发给除某人外” */
   listeners: Set<(frame: ServerFrame, audience?: Audience) => void>;
   invites: Invite[];
+  /** 已配置 webhook 的 bot member_id（没配的 @ 后会 bot.run.failed(no_webhook)） */
+  botsWithWebhook: Set<string>;
+  botRuns: BotRunItem[];
   /** client_msg_id 幂等：`${member_id}:${client_msg_id}` -> message id */
   clientMsgIds: Map<string, string>;
   seq: number;
@@ -209,7 +212,7 @@ export function createMockDb(): MockDb {
       display_name: "Grok",
       username: "grok",
       // 程序化头像（优先级最高）；同时给一个 avatar_url 示例
-      avatar_url: botAvatar("#5865f2", "AI"),
+      avatar_url: botAvatar("#6d5cf6", "AI"),
       avatar_shape: "blob",
       avatar_color: "black",
       role: "bot",
@@ -296,6 +299,18 @@ export function createMockDb(): MockDb {
     ch(IDS.cOpenGeneral, IDS.tOpen, "general", "欢迎新成员", IDS.mCarolOpen),
   ];
 
+  const broken: Attachment = {
+    id: mockUuid(53),
+    kind: "image",
+    mime_type: "image/png",
+    size_bytes: 4096,
+    file_name: "expired-link.png",
+    width: 480,
+    height: 270,
+    duration_ms: null,
+    // 故意指向不存在的文件：演示媒体加载失败的占位和重试
+    url: "/media/__missing__.png?exp=1&sig=mock",
+  };
   const img: Attachment = {
     id: mockUuid(51),
     kind: "image",
@@ -305,7 +320,7 @@ export function createMockDb(): MockDb {
     width: 480,
     height: 270,
     duration_ms: null,
-    url: demoImage("登录页设计稿 v2", "#5865f2", "#eb459e"),
+    url: demoImage("登录页设计稿 v2", "#6d5cf6", "#eb459e"),
   };
   const video: Attachment = {
     id: mockUuid(52),
@@ -363,6 +378,7 @@ export function createMockDb(): MockDb {
     msg(IDS.cGeneral, IDS.mPlanner, `📋 本周排期已更新：<@${IDS.mAlice}> 负责前端联调，<@${IDS.mBob}> 负责 WS 推送。`, 4),
     msg(IDS.cGeneral, IDS.mStar, "⭐ 今日最佳：程序化 bot 头像已接入。", 3),
     msg(IDS.cFrontend, IDS.mAlice, "Discord 式四栏布局骨架已经搭好了", 30),
+    msg(IDS.cRandom, IDS.mBob, "这张图的签名链接过期了（演示加载失败）", 15, [broken]),
   ];
   for (const c of channels) {
     c.last_message_seq = Math.max(0, ...messages.filter((m) => m.channel_id === c.id).map((m) => m.seq));
@@ -409,8 +425,11 @@ export function createMockDb(): MockDb {
     attachments: new Map([
       [img.id, img],
       [video.id, video],
+      [broken.id, broken],
     ]),
-    usedAttachments: new Set([img.id, video.id]),
+    usedAttachments: new Set([img.id, video.id, broken.id]),
+    botsWithWebhook: new Set([IDS.mHelper, IDS.mPlanner, IDS.mStar, IDS.mHelperOpen]),
+    botRuns: [],
     listeners: new Set(),
     clientMsgIds: new Map(),
     seq,

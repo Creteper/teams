@@ -1,8 +1,42 @@
 @import "tailwindcss";
 @import "@heroui/styles";
 
+/* 品牌色：与 logo 一致的蓝紫色（取 logo 渐变中段） */
+@theme {
+  --color-brand: #6d5cf6;
+  --color-brand-hover: #5f4ee8;
+  --color-brand-soft: #6d5cf633;
+  --color-brand-light: #b3a9ff;
+}
+
+/* HeroUI 主题色统一为品牌色：按钮、链接、焦点框 */
+:root,
+.dark,
+[data-theme="dark"] {
+  --accent: #6d5cf6;
+  --accent-foreground: #ffffff;
+  --focus: #8b7cff;
+  --link: #b3a9ff;
+}
+
 html,
 body,
 #root {
   height: 100%;
 }
+
+:focus-visible {
+  outline-color: #8b7cff;
+}
+
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+@keyframes teams-dots {
+  0%, 80%, 100% { opacity: 0.25; }
+  40% { opacity: 1; }
+}
+.teams-dot { animation: teams-dots 1.2s infinite ease-in-out; }
+.teams-dot:nth-child(2) { animation-delay: 0.15s; }
+.teams-dot:nth-child(3) { animation-delay: 0.3s; }

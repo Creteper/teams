@@ -63,7 +63,7 @@ export default function InvitePage() {
 
   const team = preview?.team;
   return (
-    <div className="relative flex min-h-full items-center justify-center bg-[#313338] bg-[radial-gradient(circle_at_20%_20%,#5865f233,transparent_40%),radial-gradient(circle_at_80%_80%,#23a55a22,transparent_40%)] p-6">
+    <div className="relative flex min-h-full items-center justify-center bg-[#313338] bg-[radial-gradient(circle_at_20%_20%,#6d5cf633,transparent_40%),radial-gradient(circle_at_80%_80%,#23a55a22,transparent_40%)] p-6">
       <div className="absolute left-6 top-5">
         <LogoWordmark size={32} />
       </div>
@@ -76,7 +76,7 @@ export default function InvitePage() {
           <>
             <Card.Header className="items-center">
               {team ? (
-                <span className="mb-3 flex h-20 w-20 items-center justify-center overflow-hidden rounded-3xl bg-[#5865f2] text-2xl font-bold text-white">
+                <span className="mb-3 flex h-20 w-20 items-center justify-center overflow-hidden rounded-3xl bg-brand text-2xl font-bold text-white">
                   {team.icon_url ? <img src={team.icon_url} alt="" className="h-full w-full object-cover" /> : initials(team.name)}
                 </span>
               ) : (
@@ -114,7 +114,7 @@ export default function InvitePage() {
                   </>
                 )
               ) : null}
-              <Link to={user ? "/teams" : "/login"} className="text-sm text-[#00a8fc] hover:underline">
+              <Link to={user ? "/teams" : "/login"} className="text-sm text-brand-light hover:underline">
                 {user ? "回到我的 Team" : "去登录"}
               </Link>
             </Card.Content>

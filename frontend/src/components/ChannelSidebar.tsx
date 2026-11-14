@@ -3,30 +3,38 @@ import { Link } from "react-router";
 import { Button, Input } from "@heroui/react";
 import type { Channel, Team, User } from "../api/types";
 import { MemberAvatar } from "./MemberAvatar";
+import { GearIcon, MenuItem, PopMenu } from "./ui";
 
-/** 第二栏：team 名 + 频道列表（可新建）+ 底部自己 */
+/** 第二栏：team 名 + 下拉菜单、频道列表（可新建）、底部自己 + 齿轮菜单 */
 export function ChannelSidebar({
   team,
   channels,
   currentChannelId,
   me,
+  canManage,
   onCreateChannel,
-  onLogout,
   onInvite,
+  onSettings,
+  onLeave,
+  onLogout,
 }: {
   team: Team | null;
   channels: Channel[];
   currentChannelId?: string;
   me: User;
+  canManage: boolean;
   onCreateChannel(name: string): Promise<void>;
+  onInvite(): void;
+  onSettings(): void;
+  onLeave(): void;
   onLogout(): void;
-  /** owner/admin 才传，打开邀请弹窗 */
-  onInvite?: () => void;
 }) {
-  const [menuOpen, setMenuOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [teamMenu, setTeamMenu] = useState(false);
+  const [userMenu, setUserMenu] = useState(false);
+  const isOwner = team?.my_role === "owner";
 
   async function submit() {
     setError(null);
@@ -44,33 +52,51 @@ export function ChannelSidebar({
       <div className="relative">
         <button
           type="button"
-          onClick={() => setMenuOpen((v) => !v)}
+          onClick={() => setTeamMenu((v) => !v)}
           aria-haspopup="menu"
-          aria-expanded={menuOpen}
+          aria-expanded={teamMenu}
           className="flex h-12 w-full items-center justify-between border-b border-black/30 px-4 text-left font-semibold text-[#f2f3f5] hover:bg-[#35373c]"
-          title={team?.description || team?.name}
         >
           <span className="truncate">{team?.name ?? "…"}</span>
-          <span className="text-xs text-[#b5bac1]">{menuOpen ? "✕" : "▾"}</span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true" className={`text-[#b5bac1] transition-transform ${teamMenu ? "rotate-180" : ""}`}>
+            <path d="M6 9l6 6 6-6" />
+          </svg>
         </button>
-        {menuOpen ? (
-          <div role="menu" className="absolute left-2 right-2 top-[52px] z-30 rounded-md bg-[#111214] p-1.5 shadow-xl">
-            {onInvite ? (
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  setMenuOpen(false);
-                  onInvite();
-                }}
-                className="w-full rounded px-2 py-1.5 text-left text-sm text-[#949cf7] hover:bg-[#5865f2] hover:text-white"
-              >
-                邀请成员
-              </button>
-            ) : null}
-            <div className="px-2 py-1.5 text-xs text-[#949ba4]">我的角色：{team?.my_role ?? "-"}</div>
-          </div>
-        ) : null}
+        <PopMenu open={teamMenu} onClose={() => setTeamMenu(false)} label="Team 菜单" className="absolute left-2 right-2 top-[52px]">
+          {canManage ? (
+            <MenuItem
+              onSelect={() => {
+                setTeamMenu(false);
+                onInvite();
+              }}
+            >
+              邀请成员 <span className="text-xs opacity-70">＋</span>
+            </MenuItem>
+          ) : null}
+          {canManage ? (
+            <MenuItem
+              onSelect={() => {
+                setTeamMenu(false);
+                onSettings();
+              }}
+            >
+              Team 设置 <span className="text-xs opacity-70">⚙</span>
+            </MenuItem>
+          ) : null}
+          {canManage ? <div className="my-1 h-px bg-white/10" /> : null}
+          <MenuItem
+            danger
+            disabled={isOwner}
+            hint={isOwner ? "所有者不能退出 team" : undefined}
+            onSelect={() => {
+              setTeamMenu(false);
+              onLeave();
+            }}
+          >
+            退出 Team
+          </MenuItem>
+          {isOwner ? <p className="px-2 pb-1 text-[11px] leading-snug text-[#949ba4]">你是所有者，不能退出 team。</p> : null}
+        </PopMenu>
       </div>
 
       <div className="flex-1 overflow-y-auto px-2 pt-4">
@@ -92,6 +118,7 @@ export function ChannelSidebar({
               aria-label="频道名"
               placeholder="新频道名"
               value={name}
+              maxLength={64}
               autoFocus
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
@@ -129,7 +156,7 @@ export function ChannelSidebar({
         </ul>
       </div>
 
-      <div className="flex h-[52px] items-center gap-2 bg-[#232428] px-2">
+      <div className="relative flex h-[52px] items-center gap-2 bg-[#232428] px-2">
         <MemberAvatar member={me} size={32} />
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-semibold text-[#f2f3f5]">{me.display_name}</div>
@@ -137,11 +164,26 @@ export function ChannelSidebar({
         </div>
         <button
           type="button"
-          onClick={onLogout}
-          className="rounded px-2 py-1 text-xs text-[#b5bac1] hover:bg-[#35373c] hover:text-white"
+          aria-label="用户设置"
+          aria-haspopup="menu"
+          aria-expanded={userMenu}
+          onClick={() => setUserMenu((v) => !v)}
+          className="flex h-8 w-8 items-center justify-center rounded text-[#b5bac1] hover:bg-[#35373c] hover:text-white"
         >
-          退出
+          <GearIcon />
         </button>
+        <PopMenu open={userMenu} onClose={() => setUserMenu(false)} label="用户菜单" className="absolute bottom-[56px] left-2 right-2">
+          <div className="px-2 py-1.5 text-xs text-[#949ba4]">已登录为 @{me.username}</div>
+          <MenuItem
+            danger
+            onSelect={() => {
+              setUserMenu(false);
+              onLogout();
+            }}
+          >
+            退出登录
+          </MenuItem>
+        </PopMenu>
       </div>
     </aside>
   );

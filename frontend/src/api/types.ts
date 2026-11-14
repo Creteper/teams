@@ -191,6 +191,53 @@ export interface Page<T> {
   has_more: boolean;
 }
 
+// ---------- Bot 处理状态（docs/api.md §7.6） ----------
+
+export type BotRunFailReason = "no_webhook" | "timeout" | "network_error" | "http_error" | "invalid_url" | "message_deleted";
+export type BotRunStatus = "started" | "delivered" | "retrying" | "failed" | "completed";
+
+/** bot.run.* 事件的 data（每条都带 team_id、channel_id、bot_member_id、trigger_message_id、delivery_id、at） */
+export interface BotRunEvent {
+  team_id: ID;
+  channel_id: ID;
+  bot_member_id: ID;
+  trigger_message_id: ID;
+  delivery_id: ID;
+  at: Timestamp;
+  /** retrying */
+  attempt?: number | null;
+  next_retry_at?: Timestamp | null;
+  /** retrying / failed */
+  reason?: BotRunFailReason | string | null;
+  status_code?: number | null;
+  /** completed */
+  reply_message_id?: ID;
+}
+
+/** GET /channels/{id}/bot-runs?active=true 的条目（docs/api.md §7.6） */
+export interface BotRunItem {
+  delivery_id: ID;
+  team_id: ID;
+  channel_id: ID;
+  bot_member_id: ID;
+  trigger_message_id: ID;
+  status: BotRunStatus;
+  attempt?: number | null;
+  next_retry_at?: Timestamp | null;
+  reason?: BotRunFailReason | string | null;
+  status_code?: number | null;
+  reply_message_id?: ID | null;
+  started_at: Timestamp;
+  updated_at: Timestamp;
+}
+
+export interface UpdateTeamInput {
+  /** 1–50 字符（Unicode 计数，首尾空白去掉） */
+  name?: string;
+  /** 0–500 字符 */
+  description?: string;
+}
+
 // ---------- 邀请链接（Gus 定稿，待写入 docs/api.md） ----------
 
 export type InviteInvalidReason = "expired" | "revoked" | "exhausted";
@@ -266,6 +313,10 @@ export type ServerFrame = FrameBase &
     | { type: "member.joined" | "member.updated"; data: Member }
     | { type: "member.left"; data: { member_id: ID } }
     | { type: "team.updated" | "team.joined"; data: Team }
+    | {
+        type: "bot.run.started" | "bot.run.delivered" | "bot.run.retrying" | "bot.run.failed" | "bot.run.completed";
+        data: BotRunEvent;
+      }
     | { type: "team.deleted" | "team.removed"; data: { team_id: ID } }
     | { type: "pong"; data: Record<string, never> }
     | { type: "error"; data: { code: string; message?: string } }

@@ -24,7 +24,7 @@ function fmt(iso: string | null): string {
 }
 
 const selectClass =
-  "w-full rounded-md bg-[#1e1f22] px-3 py-2 text-sm text-[#dbdee1] outline-none ring-1 ring-black/40 focus:ring-[#5865f2]";
+  "w-full rounded-md bg-[#1e1f22] px-3 py-2 text-sm text-[#dbdee1] outline-none ring-1 ring-black/40 focus:ring-brand";
 
 /** 邀请成员弹窗（owner/admin）：生成邀请链接、管理已有邀请、按用户名添加成员 */
 export function InviteDialog({
@@ -117,6 +117,13 @@ export function InviteDialog({
   }
 
   const link = created ? inviteUrl(created, origin) : "";
+
+  // Esc 关闭
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   return (
     <div

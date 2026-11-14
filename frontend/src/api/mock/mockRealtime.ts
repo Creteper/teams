@@ -1,5 +1,5 @@
 import type { FrameHandler, RealtimeClient } from "../client";
-import type { Message, ReadyData, ServerFrame } from "../types";
+import type { BotRunEvent, BotRunItem, BotRunStatus, Message, ReadyData, ServerFrame } from "../types";
 import { emit, nextId, nextSeq, senderOf, type Audience, type MockDb } from "./db";
 
 /**
@@ -9,7 +9,7 @@ import { emit, nextId, nextSeq, senderOf, type Audience, type MockDb } from "./d
  * - DeployBot 每 45s 往 #general 推一条通知，模拟服务端推送。
  */
 export function createMockRealtime(db: MockDb, opts: { botReplyMs?: number; pushIntervalMs?: number } = {}): RealtimeClient {
-  const botReplyMs = opts.botReplyMs ?? 1200;
+  const botReplyMs = opts.botReplyMs ?? 3500;
   const pushIntervalMs = opts.pushIntervalMs ?? 45_000;
   const handlers = new Set<FrameHandler>();
   const readyHandlers = new Set<(d: ReadyData) => void>();
@@ -46,6 +46,25 @@ export function createMockRealtime(db: MockDb, opts: { botReplyMs?: number; push
     emit(db, { type: "message.created", team_id: channel.team_id, data: msg });
   }
 
+  /** 模拟后端 bot.run.* 生命周期：started → delivered → (回复) → completed；没配 webhook 的 bot 直接 failed(no_webhook) */
+  function runEvent(base: Omit<BotRunEvent, "at">, status: BotRunStatus, extra: Partial<BotRunEvent> = {}) {
+    const now = new Date().toISOString();
+    const data: BotRunEvent = { ...base, ...extra, at: now };
+    const prev = db.botRuns.find((r) => r.delivery_id === base.delivery_id);
+    const item: BotRunItem = {
+      ...base,
+      status,
+      attempt: extra.attempt ?? null,
+      reason: extra.reason ?? null,
+      status_code: extra.status_code ?? null,
+      reply_message_id: extra.reply_message_id ?? null,
+      started_at: prev?.started_at ?? now,
+      updated_at: now,
+    };
+    db.botRuns = [...db.botRuns.filter((r) => r.delivery_id !== base.delivery_id), item];
+    emit(db, { type: `bot.run.${status}`, team_id: base.team_id, data } as ServerFrame);
+  }
+
   function onFrame(frame: ServerFrame, audience?: Audience) {
     const visible = !audience || ((!audience.only || audience.only === userId) && audience.except !== userId);
     if (visible) handlers.forEach((h) => h(frame));
@@ -54,6 +73,20 @@ export function createMockRealtime(db: MockDb, opts: { botReplyMs?: number; push
     if (msg.trigger_depth > 3) return; // §7.4 防循环
     for (const mention of msg.mentions) {
       if (mention.type !== "bot" || mention.member_id === msg.sender.member_id) continue;
+      if (msg.sender.type === "bot") continue; // mock 里 bot 之间不再互相触发
+      const base = {
+        team_id: msg.team_id,
+        channel_id: msg.channel_id,
+        bot_member_id: mention.member_id,
+        trigger_message_id: msg.id,
+        delivery_id: nextId(db),
+      };
+      if (!db.botsWithWebhook.has(mention.member_id)) {
+        setTimeout(() => runEvent(base, "failed", { reason: "no_webhook", status_code: null }), botReplyMs > 0 ? 400 : 0);
+        continue;
+      }
+      setTimeout(() => runEvent(base, "started"), botReplyMs > 0 ? 300 : 0);
+      setTimeout(() => runEvent(base, "delivered"), botReplyMs > 0 ? 900 : 0);
       setTimeout(() => {
         const text = msg.content.replace(/<@[^>]+>/g, "").replace(/\s+/g, " ").trim();
         botSay(
@@ -62,6 +95,8 @@ export function createMockRealtime(db: MockDb, opts: { botReplyMs?: number; push
           `<@${msg.sender.member_id}> 收到！（mock 回复）${text ? `你说的是：“${text.slice(0, 60)}”` : "已看到你的附件。"}`,
           msg,
         );
+        const reply = db.messages[db.messages.length - 1];
+        runEvent(base, "completed", { reply_message_id: reply.id });
       }, botReplyMs);
     }
   }
