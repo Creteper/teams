@@ -111,10 +111,12 @@ describe("mock api（数据形状同 docs/api.md）", () => {
   it("附件 URL 刷新：单个 + 批量（≤100）", async () => {
     const { api } = setup();
     const { token } = await api.login({ username: "alice", password: "x" });
-    const one = await api.getAttachmentUrl(token, mockUuid(51));
+    const one = await api.getAttachment(token, mockUuid(51));
     expect(Date.parse(one.expires_at)).toBeGreaterThan(Date.now());
-    const many = await api.refreshAttachmentUrls(token, [mockUuid(51), mockUuid(52)]);
-    expect(many.map((x) => x.id)).toEqual([mockUuid(51), mockUuid(52)]);
+    expect(one.kind).toBe("image");
+    const many = await api.refreshAttachmentUrls(token, [mockUuid(51), mockUuid(52), "nope", mockUuid(51)]);
+    expect(many.items.map((x) => x.id)).toEqual([mockUuid(51), mockUuid(52)]);
+    expect(many.missing).toEqual(["nope"]);
     await expect(api.refreshAttachmentUrls(token, Array.from({ length: 101 }, (_, i) => String(i)))).rejects.toMatchObject({
       status: 400,
     });
@@ -327,5 +329,20 @@ describe("mock team 设置 / 退出 / bot 处理状态 / 上传进度", () => {
     await expect(api.login({ username: "alice", password: "wrong" })).rejects.toMatchObject({ status: 401 });
     const { token } = await api.login({ username: "alice", password: "x" });
     await expect(api.sendMessage(token, IDS.cGeneral, { content: "hi [fail]", attachment_ids: [] })).rejects.toBeInstanceOf(ApiError);
+  });
+});
+
+describe("mock PATCH /me", () => {
+  it("改显示名称 1–64 字，推送 member.updated 到所在每个 team", async () => {
+    const { db, api } = setup();
+    const frames: ServerFrame[] = [];
+    db.listeners.add((f) => frames.push(f));
+    const { token } = await api.login({ username: "alice", password: "x" });
+    const u = await api.updateMe(token, { display_name: "  Alice W  " });
+    expect(u.display_name).toBe("Alice W");
+    const updated = frames.filter((f) => f.type === "member.updated");
+    expect(updated.length).toBeGreaterThanOrEqual(2);
+    await expect(api.updateMe(token, { display_name: " " })).rejects.toMatchObject({ code: "validation_failed" });
+    await expect(api.login({ username: "alice", password: "ratelimit" })).rejects.toMatchObject({ status: 429, code: "rate_limited" });
   });
 });

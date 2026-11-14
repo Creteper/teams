@@ -1,6 +1,6 @@
 import type { TeamsApi } from "../client";
 import { ApiError } from "../errors";
-import type { Attachment, AttachmentUrl, AuthResponse, Invite, Member, Message, Page, Team, User } from "../types";
+import type { Attachment, AuthResponse, Invite, Member, Message, Page, Team, User } from "../types";
 import { inviteStatus } from "../../lib/invite";
 import { checkUpload } from "../../lib/upload";
 import { emit, nextId, nextSeq, senderOf, type MockDb, type TeamRecord } from "./db";
@@ -14,6 +14,8 @@ const USERNAME_RE = /^[a-z0-9_.-]{3,32}$/;
 const CLIENT_MSG_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 
 const all = <T,>(items: T[]): Page<T> => ({ items, next_cursor: null, has_more: false });
+
+const inOneHour = () => new Date(Date.now() + 3600_000).toISOString();
 
 export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): TeamsApi {
   const latency = opts.latencyMs ?? 150;
@@ -204,6 +206,9 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
     async login(input) {
       await delay();
       const user = [...db.users.values()].find((u) => u.username === input.username.trim().toLowerCase());
+      // mock：密码填 ratelimit 模拟 IP 限流（429 rate_limited + Retry-After）
+      if (input.password === "ratelimit")
+        throw ApiError.fromBody(429, { error: { code: "rate_limited", message: "too many requests" } }, "", { retryAfter: "42" });
       // mock：密码填 wrong 模拟登录失败（mock 不保存、不校验真实密码）
       if (!user || !input.password || input.password === "wrong") throw err(401, "unauthorized", "用户名或密码错误");
       return issue(user);
@@ -217,6 +222,20 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
     async me(token) {
       await delay();
       return authed(token);
+    },
+
+    async updateMe(token, input) {
+      await delay();
+      const user = authed(token);
+      const name = (input.display_name ?? "").trim();
+      if ([...name].length < 1 || [...name].length > 64)
+        throw err(400, "validation_failed", "显示名称需 1–64 个字", { field: "display_name" });
+      user.display_name = name;
+      for (const m of db.members.filter((x) => x.user_id === user.id)) {
+        m.display_name = name;
+        emit(db, { type: "member.updated", team_id: m.team_id, data: { ...m } });
+      }
+      return { ...user };
     },
 
     async listTeams(token) {
@@ -471,12 +490,13 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
         height: null,
         duration_ms: null,
         url: typeof URL.createObjectURL === "function" ? URL.createObjectURL(file) : "",
+        expires_at: inOneHour(),
       };
       db.attachments.set(attachment.id, attachment);
       return attachment;
     },
 
-    async getAttachmentUrl(token, id) {
+    async getAttachment(token, id) {
       await delay();
       authed(token);
       const a = db.attachments.get(id);
@@ -488,12 +508,18 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
       await delay();
       authed(token);
       if (ids.length > 100) throw err(400, "validation_failed", "ids 最多 100 个", { field: "ids" });
-      return ids.map((id) => db.attachments.get(id)).filter((a): a is Attachment => !!a).map(signed);
+      const uniq = [...new Set(ids)];
+      if (uniq.length < 1) throw err(400, "validation_failed", "ids 不能为空", { field: "ids" });
+      return {
+        items: uniq.map((id) => db.attachments.get(id)).filter((a): a is Attachment => !!a).map(signed),
+        missing: uniq.filter((id) => !db.attachments.has(id)),
+      };
     },
   };
 
-  /** mock 无真实签名：URL 原样返回，expires_at = 现在 + 1 小时 */
-  function signed(a: Attachment): AttachmentUrl {
-    return { id: a.id, url: a.url, expires_at: new Date(Date.now() + 3600_000).toISOString() };
+  /** mock 无真实签名：URL 原样返回，expires_at 顺延 1 小时 */
+  function signed(a: Attachment): Attachment {
+    a.expires_at = inOneHour();
+    return { ...a };
   }
 }

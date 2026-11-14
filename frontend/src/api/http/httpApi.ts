@@ -1,7 +1,7 @@
 import type { TeamsApi } from "../client";
 import { API_BASE_URL, API_PREFIX } from "../config";
 import { ApiError } from "../errors";
-import type { ApiErrorBody, Attachment, AttachmentUrl, BotRunItem } from "../types";
+import type { ApiErrorBody, Attachment, AttachmentUrlsResponse, BotRunItem } from "../types";
 import type { UploadOptions } from "../client";
 
 /**
@@ -36,7 +36,10 @@ export async function request<T>(
     } catch {
       /* 非 JSON 错误体 */
     }
-    throw ApiError.fromBody(res.status, body, res.statusText || `HTTP ${res.status}`);
+    throw ApiError.fromBody(res.status, body, res.statusText || `HTTP ${res.status}`, {
+      retryAfter: res.headers.get("Retry-After"),
+      requestId: res.headers.get("X-Request-Id"),
+    });
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -48,6 +51,7 @@ export function createHttpApi(): TeamsApi {
     login: (input) => request("/auth/login", { method: "POST", body: input }),
     logout: (token) => request("/auth/logout", { method: "POST", token }),
     me: (token) => request("/me", { token }),
+    updateMe: (token, input) => request("/me", { method: "PATCH", token, body: input }),
 
     listTeams: (token) => request("/teams", { token }),
     createTeam: (token, input) => request("/teams", { method: "POST", token, body: input }),
@@ -88,12 +92,9 @@ export function createHttpApi(): TeamsApi {
     listInvites: (token, teamId) => request(`/teams/${encodeURIComponent(teamId)}/invites`, { token }),
     revokeInvite: (token, teamId, inviteId) =>
       request(`/teams/${encodeURIComponent(teamId)}/invites/${encodeURIComponent(inviteId)}`, { method: "DELETE", token }),
-    getAttachmentUrl: (token, id) => request(`/attachments/${encodeURIComponent(id)}`, { token }),
-    refreshAttachmentUrls: async (token, ids) => {
-      // docs/api.md §6.2：{items: Attachment[], missing: id[]}；这里只用 id/url/expires_at
-      const res = await request<{ items: AttachmentUrl[]; missing?: string[] }>("/attachments/urls", { method: "POST", token, body: { ids } });
-      return res.items;
-    },
+    getAttachment: (token, id) => request(`/attachments/${encodeURIComponent(id)}`, { token }),
+    refreshAttachmentUrls: (token, ids) =>
+      request<AttachmentUrlsResponse>("/attachments/urls", { method: "POST", token, body: { ids } }),
   };
 }
 
@@ -109,7 +110,13 @@ function uploadWithProgress(url: string, token: string, file: File, opts: Upload
     };
     xhr.onload = () => {
       if (xhr.status >= 200 && xhr.status < 300) resolve(xhr.response as Attachment);
-      else reject(ApiError.fromBody(xhr.status, xhr.response as Partial<ApiErrorBody> | null, `HTTP ${xhr.status}`));
+      else
+        reject(
+          ApiError.fromBody(xhr.status, xhr.response as Partial<ApiErrorBody> | null, `HTTP ${xhr.status}`, {
+            retryAfter: xhr.getResponseHeader("Retry-After"),
+            requestId: xhr.getResponseHeader("X-Request-Id"),
+          }),
+        );
     };
     xhr.onerror = () => reject(new ApiError(0, "network_error", "上传失败：网络错误"));
     xhr.onabort = () => reject(new DOMException("上传已取消", "AbortError"));

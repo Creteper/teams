@@ -18,6 +18,7 @@ import { botRunsReducer } from "../lib/botRuns";
 import { newClientMsgId, type OutboxItem } from "../lib/outbox";
 import { BotRunBar } from "../components/BotRunBar";
 import { TeamSettingsDialog } from "../components/TeamSettingsDialog";
+import { ProfileDialog } from "../components/ProfileDialog";
 import { ConfirmDialog } from "../components/ui";
 import type { Attachment, MessageSender } from "../api/types";
 
@@ -44,13 +45,12 @@ export default function TeamPage() {
   const [outbox, setOutbox] = useState<OutboxItem[]>([]);
   const [botRuns, dispatchRuns] = useReducer(botRunsReducer, {});
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [confirm, setConfirm] = useState<null | "leave" | "logout">(null);
   const [confirmPending, setConfirmPending] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
   const maxSeqRef = useRef(0);
   const messagesRef = useRef<Message[]>([]);
-  /** 附件 id -> 已知到期时间（来自刷新接口的 expires_at） */
-  const expiriesRef = useRef(new Map<string, number>());
   /** 加载失败已重试过的附件 id（只重试一次） */
   const retriedRef = useRef(new Set<string>());
 
@@ -133,12 +133,11 @@ export default function TeamPage() {
   // 签名 URL 快到期时批量刷新（每分钟检查，提前 5 分钟，单批 ≤100）
   useEffect(() => {
     const timer = setInterval(async () => {
-      const ids = idsNeedingRefresh(messagesRef.current, expiriesRef.current, Date.now());
+      const ids = idsNeedingRefresh(messagesRef.current, Date.now());
       for (const batch of chunk(ids, 100)) {
         try {
-          const urls = await api.refreshAttachmentUrls(token, batch);
-          urls.forEach((u) => expiriesRef.current.set(u.id, Date.parse(u.expires_at)));
-          setMessages((prev) => applyAttachmentUrls(prev, urls));
+          const { items } = await api.refreshAttachmentUrls(token, batch);
+          setMessages((prev) => applyAttachmentUrls(prev, items));
         } catch {
           /* 下次再试 */
         }
@@ -153,8 +152,7 @@ export default function TeamPage() {
       if (!force && retriedRef.current.has(attachmentId)) return;
       retriedRef.current.add(attachmentId);
       try {
-        const u = await api.getAttachmentUrl(token, attachmentId);
-        expiriesRef.current.set(u.id, Date.parse(u.expires_at));
+        const u = await api.getAttachment(token, attachmentId);
         setMessages((prev) => applyAttachmentUrls(prev, [u]));
       } catch {
         /* 放弃 */
@@ -344,6 +342,7 @@ export default function TeamPage() {
           setConfirmError(null);
           setConfirm("logout");
         }}
+        onEditProfile={() => setProfileOpen(true)}
       />
 
       <main className="flex min-w-0 flex-1 flex-col">
@@ -433,6 +432,8 @@ export default function TeamPage() {
           }}
         />
       ) : null}
+
+      {profileOpen ? <ProfileDialog onClose={() => setProfileOpen(false)} /> : null}
 
       {confirm === "leave" && team ? (
         <ConfirmDialog

@@ -132,9 +132,25 @@ export interface Attachment {
   file_name: string;
   width: number | null;
   height: number | null;
+  /** 目前恒为 null（后端未解析视频时长） */
   duration_ms: number | null;
-  /** 签名 URL（1 小时有效），可直接给 <img>/<video> */
+  /** 相对路径签名 URL（1 小时有效），可直接给 <img>/<video> */
   url: string;
+  /** 签名到期时间 */
+  expires_at: Timestamp;
+}
+
+/** POST /attachments/urls 响应（docs/api.md §6.2） */
+export interface AttachmentUrlsResponse {
+  /** 保持请求顺序 */
+  items: Attachment[];
+  /** 不可见或不存在的 id */
+  missing: ID[];
+}
+
+/** PATCH /me */
+export interface UpdateMeInput {
+  display_name: string;
 }
 
 export interface Message {
@@ -162,11 +178,6 @@ export interface SendMessageInput {
 }
 
 /** 附件签名 URL 刷新结果：GET /attachments/{id}、POST /attachments/urls */
-export interface AttachmentUrl {
-  id: ID;
-  url: string;
-  expires_at: Timestamp;
-}
 
 /**
  * 消息分页：before/after 是 seq 游标。items 一律按 seq 升序；

@@ -14,6 +14,8 @@ interface AuthState {
   login(input: LoginInput): Promise<void>;
   register(input: RegisterInput): Promise<void>;
   logout(): Promise<void>;
+  /** PATCH /me：改显示名称 */
+  updateProfile(displayName: string): Promise<void>;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -76,6 +78,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       async register(input) {
         const s = await api.register(input);
         applySession(s.token, s.user);
+      },
+      async updateProfile(displayName) {
+        if (!token) return;
+        setUser(await api.updateMe(token, { display_name: displayName }));
       },
       async logout() {
         if (token) await api.logout(token).catch(() => undefined);

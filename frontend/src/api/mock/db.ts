@@ -310,6 +310,7 @@ export function createMockDb(): MockDb {
     duration_ms: null,
     // 故意指向不存在的文件：演示媒体加载失败的占位和重试
     url: "/media/__missing__.png?exp=1&sig=mock",
+    expires_at: new Date(Date.now() + 3600_000).toISOString(),
   };
   const img: Attachment = {
     id: mockUuid(51),
@@ -321,6 +322,7 @@ export function createMockDb(): MockDb {
     height: 270,
     duration_ms: null,
     url: demoImage("登录页设计稿 v2", "#6d5cf6", "#eb459e"),
+    expires_at: new Date(Date.now() + 3600_000).toISOString(),
   };
   const video: Attachment = {
     id: mockUuid(52),
@@ -330,9 +332,10 @@ export function createMockDb(): MockDb {
     file_name: "demo-standup.mp4",
     width: 480,
     height: 270,
-    duration_ms: 4000,
+    duration_ms: null, // 后端目前恒为 null
     // 本地示例视频（public/media，ffmpeg testsrc 生成）
     url: "/media/demo-standup.mp4",
+    expires_at: new Date(Date.now() + 3600_000).toISOString(),
   };
 
   const memberById = new Map(members.map((m) => [m.id, m]));

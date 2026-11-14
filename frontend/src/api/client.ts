@@ -2,7 +2,8 @@ import type {
   AddMemberInput,
   Attachment,
   AcceptInviteResponse,
-  AttachmentUrl,
+  AttachmentUrlsResponse,
+  UpdateMeInput,
   AuthResponse,
   BotRunItem,
   UpdateTeamInput,
@@ -40,6 +41,8 @@ export interface TeamsApi {
   logout(token: string): Promise<void>;
   /** GET /api/v1/me */
   me(token: string): Promise<User>;
+  /** PATCH /api/v1/me {display_name} → User；推送 member.updated */
+  updateMe(token: string, input: UpdateMeInput): Promise<User>;
 
   /** GET /api/v1/teams（一次返回全部） */
   listTeams(token: string): Promise<Page<Team>>;
@@ -83,9 +86,9 @@ export interface TeamsApi {
   revokeInvite(token: string, teamId: ID, inviteId: ID): Promise<void>;
 
   /** GET /api/v1/attachments/{id}：刷新单个签名 URL */
-  getAttachmentUrl(token: string, attachmentId: ID): Promise<AttachmentUrl>;
+  getAttachment(token: string, attachmentId: ID): Promise<Attachment>;
   /** POST /api/v1/attachments/urls {ids}（≤100）：批量刷新签名 URL */
-  refreshAttachmentUrls(token: string, ids: ID[]): Promise<AttachmentUrl[]>;
+  refreshAttachmentUrls(token: string, ids: ID[]): Promise<AttachmentUrlsResponse>;
 }
 
 /** members 分页：循环拉完（limit 默认 100，最大 200） */

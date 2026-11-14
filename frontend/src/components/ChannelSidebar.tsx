@@ -17,6 +17,7 @@ export function ChannelSidebar({
   onSettings,
   onLeave,
   onLogout,
+  onEditProfile,
 }: {
   team: Team | null;
   channels: Channel[];
@@ -28,6 +29,7 @@ export function ChannelSidebar({
   onSettings(): void;
   onLeave(): void;
   onLogout(): void;
+  onEditProfile(): void;
 }) {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
@@ -174,6 +176,15 @@ export function ChannelSidebar({
         </button>
         <PopMenu open={userMenu} onClose={() => setUserMenu(false)} label="用户菜单" className="absolute bottom-[56px] left-2 right-2">
           <div className="px-2 py-1.5 text-xs text-[#949ba4]">已登录为 @{me.username}</div>
+          <MenuItem
+            onSelect={() => {
+              setUserMenu(false);
+              onEditProfile();
+            }}
+          >
+            编辑个人资料
+          </MenuItem>
+          <div className="my-1 h-px bg-white/10" />
           <MenuItem
             danger
             onSelect={() => {
