@@ -99,8 +99,16 @@ func (r Result) Retryable() bool {
 
 func (r Result) OK() bool { return r.Err == nil && r.StatusCode >= 200 && r.StatusCode < 300 }
 
+// Payload is a rendered delivery: the JSON body plus extra X-TeAms-*
+// headers that duplicate key identifiers for receivers that truncate bodies.
+type Payload struct {
+	Body    []byte
+	Headers map[string]string
+}
+
 // Send performs one signed POST.
-func Send(ctx context.Context, client *http.Client, t *Target, event, deliveryID string, body []byte) Result {
+func Send(ctx context.Context, client *http.Client, t *Target, event, deliveryID string, p Payload) Result {
+	body := p.Body
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.URL, bytes.NewReader(body))
 	if err != nil {
 		return Result{Err: err}
@@ -112,6 +120,11 @@ func Send(ctx context.Context, client *http.Client, t *Target, event, deliveryID
 	req.Header.Set("X-TeAms-Delivery", deliveryID)
 	req.Header.Set("X-TeAms-Timestamp", strconv.FormatInt(ts, 10))
 	req.Header.Set("X-TeAms-Signature", Sign(t.SigningSecret, ts, body))
+	for k, v := range p.Headers {
+		if strings.HasPrefix(strings.ToLower(k), "x-teams-") && req.Header.Get(k) == "" {
+			req.Header.Set(k, v)
+		}
+	}
 	if t.HeaderName != "" {
 		req.Header.Set(t.HeaderName, t.HeaderValue)
 	}
@@ -186,7 +199,7 @@ func RunReason(cls string) string {
 }
 
 // BuildFunc renders the JSON body for a delivery.
-type BuildFunc func(ctx context.Context, d Delivery) ([]byte, error)
+type BuildFunc func(ctx context.Context, d Delivery) (Payload, error)
 
 type Worker struct {
 	Pool    *pgxpool.Pool
@@ -319,7 +332,7 @@ func (w *Worker) process(ctx context.Context, d Delivery) {
 		w.fail(ctx, d, nil, "webhook_not_configured")
 		return
 	}
-	body, err := w.Build(ctx, d)
+	pl, err := w.Build(ctx, d)
 	if err != nil {
 		if errors.Is(err, ErrDrop) {
 			w.fail(ctx, d, nil, "dropped")
@@ -329,13 +342,13 @@ func (w *Worker) process(ctx context.Context, d Delivery) {
 		}
 		return
 	}
-	res := Send(ctx, w.Client, t, d.Event, d.ID, body)
+	res := Send(ctx, w.Client, t, d.Event, d.ID, pl)
 	var code *int
 	if res.Err == nil {
 		c := res.StatusCode
 		code = &c
 	}
-	slog.Info("webhook delivery", "delivery", d.ID, "bot", d.BotID, "attempt", d.Attempts, "result", ErrorClass(res))
+	slog.Info("webhook delivery", "delivery", d.ID, "bot", d.BotID, "attempt", d.Attempts, "bytes", len(pl.Body), "result", ErrorClass(res))
 	switch {
 	case res.OK():
 		w.finish(ctx, d.ID, "succeeded", code, "")

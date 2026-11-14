@@ -664,11 +664,11 @@ func (s *Server) testWebhook(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	d := webhook.Delivery{ID: newID(), BotID: b.ID, Event: "ping", Attempts: 1}
-	body, err := s.buildDeliveryPayload(ctx, d)
+	pl, err := s.buildDeliveryPayload(ctx, d)
 	if err != nil {
 		return err
 	}
-	res := webhook.Send(ctx, s.hookClient, t, "ping", d.ID, body)
+	res := webhook.Send(ctx, s.hookClient, t, "ping", d.ID, pl)
 	status := "failed"
 	if res.OK() {
 		status = "succeeded"

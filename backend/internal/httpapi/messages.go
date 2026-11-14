@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -534,61 +535,170 @@ func (s *Server) payloadBot(b *botView) payloadBot {
 		AvatarURL: s.abs(b.AvatarURL), AvatarShape: b.AvatarShape, AvatarColor: b.AvatarColor}
 }
 
-func (s *Server) buildDeliveryPayload(ctx context.Context, d webhook.Delivery) ([]byte, error) {
+// Webhook payload types. Field order is part of the contract: identifiers
+// and routing data come first and long text (content_plain, content) last,
+// so receivers that truncate long bodies still see who sent what.
+type payloadTeam struct {
+	ID      string  `json:"id"`
+	Name    string  `json:"name"`
+	IconURL *string `json:"icon_url"`
+}
+
+type payloadPing struct {
+	Event      string      `json:"event"`
+	DeliveryID string      `json:"delivery_id"`
+	SentAt     jsTime      `json:"sent_at"`
+	Team       payloadTeam `json:"team"`
+	Bot        payloadBot  `json:"bot"`
+}
+
+type payloadLoopGuard struct {
+	TriggerDepth     int `json:"trigger_depth"`
+	MaxTriggerDepth  int `json:"max_trigger_depth"`
+	ReplyDepthWillBe int `json:"reply_depth_will_be"`
+}
+
+type payloadSender struct {
+	MemberID    string  `json:"member_id"`
+	Type        string  `json:"type"`
+	UserID      *string `json:"user_id"`
+	BotID       *string `json:"bot_id"`
+	Username    string  `json:"username"`
+	DisplayName string  `json:"display_name"`
+	AvatarURL   *string `json:"avatar_url"`
+	AvatarShape *string `json:"avatar_shape"`
+	AvatarColor *string `json:"avatar_color"`
+}
+
+type payloadChannel struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type payloadAttachment struct {
+	ID        string `json:"id"`
+	Kind      string `json:"kind"`
+	MimeType  string `json:"mime_type"`
+	SizeBytes int64  `json:"size_bytes"`
+	FileName  string `json:"file_name"`
+	Width     *int   `json:"width"`
+	Height    *int   `json:"height"`
+	URL       string `json:"url"`
+}
+
+type payloadMessage struct {
+	ID           string              `json:"id"`
+	Seq          int64               `json:"seq"`
+	ReplyTo      *string             `json:"reply_to"`
+	TriggerDepth int                 `json:"trigger_depth"`
+	CreatedAt    jsTime              `json:"created_at"`
+	Mentions     []mentionView       `json:"mentions"`
+	Attachments  []payloadAttachment `json:"attachments"`
+	ContentPlain string              `json:"content_plain"`
+	Content      string              `json:"content"`
+}
+
+type payloadReplyHint struct {
+	Content string `json:"content"`
+	ReplyTo string `json:"reply_to"`
+}
+
+type payloadReply struct {
+	Method   string           `json:"method"`
+	URL      string           `json:"url"`
+	Auth     string           `json:"auth"`
+	BodyHint payloadReplyHint `json:"body_hint"`
+}
+
+type payloadMention struct {
+	Event      string           `json:"event"`
+	DeliveryID string           `json:"delivery_id"`
+	SentAt     jsTime           `json:"sent_at"`
+	LoopGuard  payloadLoopGuard `json:"loop_guard"`
+	Sender     payloadSender    `json:"sender"`
+	Channel    payloadChannel   `json:"channel"`
+	Message    payloadMessage   `json:"message"`
+	Reply      payloadReply     `json:"reply"`
+	Team       payloadTeam      `json:"team"`
+	Bot        payloadBot       `json:"bot"`
+}
+
+// marshalPayload encodes without HTML escaping, so "<@id>" stays literal.
+func marshalPayload(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buf.Bytes(), []byte("\n")), nil
+}
+
+func (s *Server) buildDeliveryPayload(ctx context.Context, d webhook.Delivery) (webhook.Payload, error) {
+	var none webhook.Payload
 	b, err := loadBot(ctx, s.pool, d.BotID)
 	if err != nil {
-		return nil, webhook.ErrDrop
+		return none, webhook.ErrDrop
 	}
 	t, err := loadTeam(ctx, s.pool, b.TeamID)
 	if err != nil {
-		return nil, webhook.ErrDrop
+		return none, webhook.ErrDrop
 	}
-	team := map[string]any{"id": t.ID, "name": t.Name, "icon_url": s.abs(t.IconURL)}
+	team := payloadTeam{ID: t.ID, Name: t.Name, IconURL: s.abs(t.IconURL)}
 	now := jsTime(time.Now())
 	if d.Event == "ping" || d.MessageID == nil {
-		return json.Marshal(map[string]any{"event": "ping", "delivery_id": d.ID, "sent_at": now, "bot": s.payloadBot(b), "team": team})
+		body, err := marshalPayload(payloadPing{Event: "ping", DeliveryID: d.ID, SentAt: now, Team: team, Bot: s.payloadBot(b)})
+		return webhook.Payload{Body: body}, err
 	}
 	m, err := s.loadMessage(ctx, s.pool, *d.MessageID)
 	if err != nil || m.Deleted {
-		return nil, webhook.ErrDrop
+		return none, webhook.ErrDrop
 	}
 	ch, err := loadChannel(ctx, s.pool, m.ChannelID)
 	if err != nil {
-		return nil, webhook.ErrDrop
+		return none, webhook.ErrDrop
 	}
 	sm, err := loadMember(ctx, s.pool, m.Sender.MemberID)
 	if err != nil {
-		return nil, err
+		return none, err
 	}
 	names := map[string]string{}
 	for _, mm := range m.Mentions {
 		names[mm.MemberID] = mm.DisplayName
 	}
-	atts := make([]map[string]any, 0, len(m.Attachments))
+	atts := make([]payloadAttachment, 0, len(m.Attachments))
 	for _, a := range m.Attachments {
-		u := s.cfg.PublicBaseURL + a.URL
-		atts = append(atts, map[string]any{"id": a.ID, "kind": a.Kind, "mime_type": a.MimeType, "size_bytes": a.SizeBytes,
-			"file_name": a.FileName, "width": a.Width, "height": a.Height, "url": u})
+		atts = append(atts, payloadAttachment{ID: a.ID, Kind: a.Kind, MimeType: a.MimeType, SizeBytes: a.SizeBytes,
+			FileName: a.FileName, Width: a.Width, Height: a.Height, URL: s.cfg.PublicBaseURL + a.URL})
 	}
-	payload := map[string]any{
-		"event":       "message.mention",
-		"delivery_id": d.ID,
-		"sent_at":     now,
-		"bot":         s.payloadBot(b),
-		"team":        team,
-		"channel":     map[string]any{"id": ch.ID, "name": ch.Name},
-		"sender": map[string]any{"member_id": sm.ID, "type": sm.Type, "user_id": sm.UserID, "bot_id": sm.BotID,
-			"username": sm.Username, "display_name": sm.DisplayName, "avatar_url": s.abs(sm.AvatarURL),
-			"avatar_shape": sm.AvatarShape, "avatar_color": sm.AvatarColor},
-		"message": map[string]any{"id": m.ID, "seq": m.Seq, "content": m.Content, "content_plain": mention.Plain(m.Content, names),
-			"mentions": m.Mentions, "attachments": atts, "reply_to": m.ReplyTo, "trigger_depth": m.TriggerDepth, "created_at": m.CreatedAt},
-		"loop_guard": map[string]any{"trigger_depth": m.TriggerDepth, "max_trigger_depth": s.cfg.MaxTriggerDepth, "reply_depth_will_be": m.TriggerDepth + 1},
-		"reply": map[string]any{
-			"method":    "POST",
-			"url":       s.cfg.PublicBaseURL + "/api/v1/channels/" + ch.ID + "/messages",
-			"auth":      "Authorization: Bearer <BOT_TOKEN>",
-			"body_hint": map[string]any{"content": "<@" + sm.ID + "> …", "reply_to": m.ID},
-		},
+	mentions := m.Mentions
+	if mentions == nil {
+		mentions = []mentionView{}
 	}
-	return json.Marshal(payload)
+	p := payloadMention{
+		Event:      "message.mention",
+		DeliveryID: d.ID,
+		SentAt:     now,
+		LoopGuard:  payloadLoopGuard{TriggerDepth: m.TriggerDepth, MaxTriggerDepth: s.cfg.MaxTriggerDepth, ReplyDepthWillBe: m.TriggerDepth + 1},
+		Sender: payloadSender{MemberID: sm.ID, Type: sm.Type, UserID: sm.UserID, BotID: sm.BotID, Username: sm.Username,
+			DisplayName: sm.DisplayName, AvatarURL: s.abs(sm.AvatarURL), AvatarShape: sm.AvatarShape, AvatarColor: sm.AvatarColor},
+		Channel: payloadChannel{ID: ch.ID, Name: ch.Name},
+		Message: payloadMessage{ID: m.ID, Seq: m.Seq, ReplyTo: m.ReplyTo, TriggerDepth: m.TriggerDepth, CreatedAt: m.CreatedAt,
+			Mentions: mentions, Attachments: atts, ContentPlain: mention.Plain(m.Content, names), Content: m.Content},
+		Reply: payloadReply{Method: "POST", URL: s.cfg.PublicBaseURL + "/api/v1/channels/" + ch.ID + "/messages",
+			Auth: "Authorization: Bearer <BOT_TOKEN>", BodyHint: payloadReplyHint{Content: "<@" + sm.ID + "> …", ReplyTo: m.ID}},
+		Team: team,
+		Bot:  s.payloadBot(b),
+	}
+	body, err := marshalPayload(p)
+	if err != nil {
+		return none, err
+	}
+	return webhook.Payload{Body: body, Headers: map[string]string{
+		"X-TeAms-Message-Id":       m.ID,
+		"X-TeAms-Channel-Id":       ch.ID,
+		"X-TeAms-Sender-Member-Id": sm.ID,
+		"X-TeAms-Sender-Type":      sm.Type,
+		"X-TeAms-Trigger-Depth":    strconv.Itoa(m.TriggerDepth),
+	}}, nil
 }

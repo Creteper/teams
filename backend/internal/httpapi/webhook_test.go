@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +99,28 @@ func TestWebhookDeliveryAndSignature(t *testing.T) {
 	}
 	if contains(req.Body, b.Token) || contains(req.Body, "s3cr3t-value") {
 		t.Fatal("payload leaks secrets")
+	}
+	// key identifiers duplicated in headers
+	if h.Get("X-TeAms-Message-Id") != msg["id"] || h.Get("X-TeAms-Channel-Id") != tm.GeneralID ||
+		h.Get("X-TeAms-Sender-Member-Id") != tm.MemberID || h.Get("X-TeAms-Sender-Type") != "user" || h.Get("X-TeAms-Trigger-Depth") != "0" {
+		t.Fatalf("id headers: %v", h)
+	}
+	// identifiers precede long text; no HTML escaping of <@id>
+	body := string(req.Body)
+	order := []string{`{"event":`, `,"delivery_id":`, `,"loop_guard":`, `,"sender":`, `,"channel":`, `,"message":`, `,"reply":`, `},"team":`, `},"bot":`}
+	last := -1
+	for _, k := range order {
+		i := strings.Index(body, k)
+		if i <= last {
+			t.Fatalf("field %s out of order in %s", k, body)
+		}
+		last = i
+	}
+	if mi, ci := strings.Index(body, `"id":"`+msg["id"].(string)+`"`), strings.Index(body, `"content_plain"`); mi < 0 || mi > ci {
+		t.Fatalf("message.id must precede content: %s", body)
+	}
+	if strings.Contains(body, `\u003c`) || !strings.Contains(body, `"content":"<@`+b.MemberID+`> summarize"`) {
+		t.Fatalf("html escaped: %s", body)
 	}
 	// bot replies with its token, mentioning the user
 	reply := e.send(b.Token, tm.GeneralID, map[string]any{"content": "<@" + tm.MemberID + "> done", "reply_to": msg["id"]})

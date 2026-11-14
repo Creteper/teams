@@ -342,34 +342,39 @@ X-TeAms-Event: message.mention        （测试为 ping）
 X-TeAms-Delivery: <delivery_id>       （重试时不变，用于去重）
 X-TeAms-Timestamp: <unix 秒>
 X-TeAms-Signature: sha256=<hex>
+X-TeAms-Message-Id: <message.id>              （仅 message.mention，下同）
+X-TeAms-Channel-Id: <channel.id>
+X-TeAms-Sender-Member-Id: <sender.member_id>
+X-TeAms-Sender-Type: user | bot
+X-TeAms-Trigger-Depth: <message.trigger_depth>
 <secret_header_name>: <SECRET_HEADER_VALUE>   （若配置）
 ```
 
 签名：`hex(HMAC-SHA256(signing_secret, timestamp + "." + raw_body))`。接收方应校验签名并拒绝时间戳偏差 > 5 分钟的请求。
 
-Payload（**发送时**根据最新数据生成；消息在发送前被删除则该投递放弃）：
+Payload（**发送时**根据最新数据生成；消息在发送前被删除则该投递放弃）。**字段顺序固定**，如下所示：标识和路由信息在前，长文本（`content_plain`、`content`）在 `message` 的最后，接收方即使截断请求体也能先拿到 `event`、`delivery_id`、`loop_guard`、`sender`、`channel` 和 `message.id`。JSON 不做 HTML 转义（`<@id>` 原样输出，不会变成 `\u003c@id\u003e`）。
 ```json
 {
   "event": "message.mention",
   "delivery_id": "…",
   "sent_at": "…",
-  "bot":     { "id": "…", "member_id": "…", "name": "grok", "display_name": "Grok",
-               "avatar_url": "https://…/api/v1/avatars/…", "avatar_shape": "squircle", "avatar_color": "#5865F2" },
-  "team":    { "id": "…", "name": "TeAms 开发组", "icon_url": null },
-  "channel": { "id": "…", "name": "general" },
+  "loop_guard": { "trigger_depth": 0, "max_trigger_depth": 3, "reply_depth_will_be": 1 },
   "sender":  { "member_id": "…", "type": "user", "user_id": "…", "bot_id": null, "username": "creteper",
                "display_name": "Creteper", "avatar_url": null, "avatar_shape": null, "avatar_color": null },
-  "message": { "id": "…", "seq": 1025, "content": "<@…> 帮我总结", "content_plain": "@Grok 帮我总结",
+  "channel": { "id": "…", "name": "general" },
+  "message": { "id": "…", "seq": 1025, "reply_to": null, "trigger_depth": 0, "created_at": "…",
                "mentions": [ … ], "attachments": [ { "id": "…", "kind": "image", "mime_type": "image/png", "size_bytes": 1,
                "file_name": "a.png", "width": 1, "height": 1, "url": "https://…/content?exp=…&sig=…" } ],
-               "reply_to": null, "trigger_depth": 0, "created_at": "…" },
-  "loop_guard": { "trigger_depth": 0, "max_trigger_depth": 3, "reply_depth_will_be": 1 },
+               "content_plain": "@Grok 帮我总结", "content": "<@…> 帮我总结" },
   "reply": { "method": "POST", "url": "https://…/api/v1/channels/<channel_id>/messages",
              "auth": "Authorization: Bearer <BOT_TOKEN>",
-             "body_hint": { "content": "<@<sender_member_id>> …", "reply_to": "<message_id>" } }
+             "body_hint": { "content": "<@<sender_member_id>> …", "reply_to": "<message_id>" } },
+  "team":    { "id": "…", "name": "TeAms 开发组", "icon_url": null },
+  "bot":     { "id": "…", "member_id": "…", "name": "grok", "display_name": "Grok",
+               "avatar_url": "https://…/api/v1/avatars/…", "avatar_shape": "squircle", "avatar_color": "#5865F2" }
 }
 ```
-URL 均为基于 `TEAMS_PUBLIC_BASE_URL` 的绝对地址。ping 只含 `event/delivery_id/sent_at/bot/team`。
+URL 均为基于 `TEAMS_PUBLIC_BASE_URL` 的绝对地址。ping 只含 `event/delivery_id/sent_at/team/bot`（按此顺序），不带 `X-TeAms-Message-Id` 等消息相关请求头。
 
 ### 7.3 超时与重试
 
@@ -616,3 +621,4 @@ IP 取连接地址；只有来自本机回环的请求（即 Caddy 反代）才�
 22. **非 admin 读取 bot 时 `webhook` 为 null**。
 23. 新增 IP 频率限制：注册/登录、邀请预览（§11）。
 24. 频道创建/修改仅限用户会话（bot 不可）；频道名 1–64、topic ≤250。
+25. **Webhook payload 字段顺序固定、关键字段进请求头**：顶层顺序为 `event, delivery_id, sent_at, loop_guard, sender, channel, message, reply, team, bot`，`message` 内 `content_plain`、`content` 放最后（之前按字母序输出，长消息被接收方截断时会丢掉 `sender` 和 `message.id`）；JSON 不再做 HTML 转义；message.mention 额外带 `X-TeAms-Message-Id`、`X-TeAms-Channel-Id`、`X-TeAms-Sender-Member-Id`、`X-TeAms-Sender-Type`、`X-TeAms-Trigger-Depth` 请求头。字段名和取值不变，签名仍按原始 body 计算。
