@@ -4,6 +4,7 @@ import type {
   AcceptInviteResponse,
   AttachmentUrlsResponse,
   UpdateMeInput,
+  UpdateMemberRoleInput,
   AuthResponse,
   BotRunItem,
   UpdateTeamInput,
@@ -59,6 +60,11 @@ export interface TeamsApi {
   listMembers(token: string, teamId: ID, query?: MemberPageQuery): Promise<Page<Member>>;
   /** POST /api/v1/teams/{team_id}/members（owner/admin 按用户名添加） */
   addMember(token: string, teamId: ID, input: AddMemberInput): Promise<Member>;
+  /**
+   * PATCH /api/v1/teams/{team_id}/members/{member_id} {role: "admin"|"member"}（owner/admin；不能改 owner 和 bot）。
+   * 文档未写明响应体；返回值可能不是 Member（调用方按 isMember 判断，否则保留乐观值）。
+   */
+  updateMemberRole(token: string, teamId: ID, memberId: ID, input: UpdateMemberRoleInput): Promise<Member | null>;
 
   /** GET /api/v1/teams/{team_id}/channels（一次返回全部） */
   listChannels(token: string, teamId: ID): Promise<Page<Channel>>;

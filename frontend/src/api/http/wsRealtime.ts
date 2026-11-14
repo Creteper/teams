@@ -36,6 +36,7 @@ export function createWsRealtime(): RealtimeClient {
       send({ type: "auth", token: token! });
     };
     sock.onmessage = (ev) => {
+      if (ws !== sock) return; // 已被新连接取代的旧 socket，丢弃它的帧
       let frame: ServerFrame;
       try {
         frame = JSON.parse(String(ev.data)) as ServerFrame;
@@ -51,7 +52,10 @@ export function createWsRealtime(): RealtimeClient {
       frameHandlers.forEach((h) => h(frame));
     };
     sock.onclose = (ev) => {
-      if (ws === sock) ws = null;
+      // 旧 socket（disconnect 后又 connect，如 React StrictMode 的挂载→卸载→挂载）关闭时不能触发重连，
+      // 否则会和新连接并存，同一事件收两次
+      if (ws !== sock) return;
+      ws = null;
       if (pingTimer) clearInterval(pingTimer);
       pingTimer = null;
       if (ev.code === 4401) {

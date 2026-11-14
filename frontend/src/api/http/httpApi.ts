@@ -3,6 +3,7 @@ import { API_BASE_URL, API_PREFIX } from "../config";
 import { ApiError } from "../errors";
 import type { ApiErrorBody, Attachment, AttachmentUrlsResponse, BotRunItem } from "../types";
 import type { UploadOptions } from "../client";
+import { isMember } from "../../lib/memberRoles";
 
 /**
  * 真实后端实现：fetch + `Authorization: Bearer <SESSION_TOKEN>`，路径按 docs/api.md。
@@ -63,6 +64,14 @@ export function createHttpApi(): TeamsApi {
       request(`/teams/${encodeURIComponent(teamId)}/members`, { token, query: { limit: query.limit, cursor: query.cursor } }),
     addMember: (token, teamId, input) =>
       request(`/teams/${encodeURIComponent(teamId)}/members`, { method: "POST", token, body: input }),
+    updateMemberRole: async (token, teamId, memberId, input) => {
+      const res = await request<unknown>(`/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(memberId)}`, {
+        method: "PATCH",
+        token,
+        body: input,
+      });
+      return isMember(res) ? res : null;
+    },
 
     listChannels: (token, teamId) => request(`/teams/${encodeURIComponent(teamId)}/channels`, { token }),
     createChannel: (token, teamId, input) =>

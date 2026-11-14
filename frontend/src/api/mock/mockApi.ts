@@ -352,6 +352,25 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
       return member;
     },
 
+    // §3 PATCH /teams/{team_id}/members/{member_id}：owner/admin；只能设 admin/member；不能改 owner 和 bot。
+    // 文档没写的（改自己、admin 改 admin、改 owner/bot 的具体错误码、响应体）这里不额外发挥：
+    // owner/bot → 403 forbidden（同“移除 owner → 403”），响应体返回 Member，并向 team 推送 member.updated。
+    async updateMemberRole(token, teamId, memberId, input) {
+      await delay();
+      const me = requireMember(authed(token), teamId);
+      if (me.role !== "owner" && me.role !== "admin") throw err(403, "forbidden", "只有所有者和管理员可以修改成员角色");
+      if (input.role !== "admin" && input.role !== "member")
+        throw err(400, "validation_failed", "role 只能是 admin 或 member", { field: "role" });
+      const idx = db.members.findIndex((m) => m.team_id === teamId && m.id === memberId);
+      if (idx < 0) throw err(404, "not_found", "成员不存在");
+      const target = db.members[idx];
+      if (target.role === "owner" || target.type === "bot") throw err(403, "forbidden", "不能修改所有者或 bot 的角色");
+      const next: Member = { ...target, role: input.role };
+      db.members[idx] = next;
+      if (target.role !== next.role) emit(db, { type: "member.updated", team_id: teamId, data: { ...next } });
+      return next;
+    },
+
     async listChannels(token, teamId) {
       await delay();
       requireMember(authed(token), teamId);

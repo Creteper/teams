@@ -20,6 +20,7 @@ import { BotRunBar } from "../components/BotRunBar";
 import { TeamSettingsDialog } from "../components/TeamSettingsDialog";
 import { ProfileDialog } from "../components/ProfileDialog";
 import { ConfirmDialog } from "../components/ui";
+import { optimisticRoleChange, syncMyRole, upsertMember, type RoleAction } from "../lib/memberRoles";
 import type { Attachment, MessageSender } from "../api/types";
 
 /** Team 主界面（Discord 式四栏）：team 图标栏 | 频道侧栏 | 消息区 | 成员列表 */
@@ -49,6 +50,10 @@ export default function TeamPage() {
   const [confirm, setConfirm] = useState<null | "leave" | "logout">(null);
   const [confirmPending, setConfirmPending] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  // 设为/取消管理员：取消前二次确认；乐观更新，失败回滚并提示
+  const [demoteTarget, setDemoteTarget] = useState<Member | null>(null);
+  const [rolePendingId, setRolePendingId] = useState<string | null>(null);
+  const [roleNotice, setRoleNotice] = useState<string | null>(null);
   const maxSeqRef = useRef(0);
   const messagesRef = useRef<Message[]>([]);
   /** 加载失败已重试过的附件 id（只重试一次） */
@@ -208,7 +213,9 @@ export default function TeamPage() {
           break;
         case "member.joined":
         case "member.updated":
-          setMembers((prev) => [...prev.filter((m) => m.id !== frame.data.id), frame.data]);
+          // 原位替换（角色变化不打乱顺序）；是我自己时同步 my_role，入口/权限立即跟着变
+          setMembers((prev) => upsertMember(prev, frame.data));
+          setTeam((prev) => syncMyRole(prev, frame.data));
           break;
         case "member.left":
           setMembers((prev) => prev.filter((m) => m.id !== frame.data.member_id));
@@ -295,6 +302,16 @@ export default function TeamPage() {
     } finally {
       setConfirmPending(false);
     }
+  }
+
+  async function changeRole(target: Member, action: RoleAction) {
+    setRoleNotice(null);
+    setRolePendingId(target.id);
+    const failure = await optimisticRoleChange(target, action, setMembers, (role) =>
+      api.updateMemberRole(token, teamId, target.id, { role }),
+    );
+    setRolePendingId(null);
+    if (failure) setRoleNotice(failure);
   }
 
   if (!user) return null;
@@ -415,14 +432,44 @@ export default function TeamPage() {
         )}
       </main>
 
-      <MemberList members={members} onInvite={canManage ? () => setInviteOpen(true) : undefined} />
+      <MemberList
+        members={members}
+        onInvite={canManage ? () => setInviteOpen(true) : undefined}
+        roles={{
+          myRole: team?.my_role,
+          myMemberId,
+          pendingId: rolePendingId,
+          onAction: (m, action) => (action === "demote" ? setDemoteTarget(m) : void changeRole(m, action)),
+        }}
+        notice={roleNotice}
+        onDismissNotice={() => setRoleNotice(null)}
+      />
+
+      {demoteTarget ? (
+        <ConfirmDialog
+          title="取消管理员"
+          message={
+            <>
+              确定取消 <span className="font-medium text-[#f2f3f5]">{demoteTarget.display_name}</span>（@{demoteTarget.username}）的管理员身份吗？
+              取消后 TA 将不能再管理频道、邀请和 Team 设置。
+            </>
+          }
+          confirmText="取消管理员"
+          onConfirm={() => {
+            const t = demoteTarget;
+            setDemoteTarget(null);
+            void changeRole(t, "demote");
+          }}
+          onCancel={() => setDemoteTarget(null)}
+        />
+      ) : null}
 
       {inviteOpen && team && canManage ? (
         <InviteDialog
           token={token}
           team={team}
           onClose={() => setInviteOpen(false)}
-          onMemberAdded={(m) => setMembers((prev) => [...prev.filter((x) => x.id !== m.id), m])}
+          onMemberAdded={(m) => setMembers((prev) => upsertMember(prev, m))}
         />
       ) : null}
 

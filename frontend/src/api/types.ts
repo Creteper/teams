@@ -82,6 +82,11 @@ export interface Member {
   joined_at: Timestamp;
 }
 
+/** PATCH /teams/{team_id}/members/{member_id}（§3）：只能在 admin / member 之间切换 */
+export interface UpdateMemberRoleInput {
+  role: "admin" | "member";
+}
+
 export interface AddMemberInput {
   username: string;
   role?: Exclude<TeamRole, "owner">;

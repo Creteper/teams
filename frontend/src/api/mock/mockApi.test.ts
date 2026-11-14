@@ -346,3 +346,33 @@ describe("mock PATCH /me", () => {
     await expect(api.login({ username: "alice", password: "ratelimit" })).rejects.toMatchObject({ status: 429, code: "rate_limited" });
   });
 });
+
+describe("mock：PATCH 成员角色（§3）", () => {
+  it("owner 把成员设为管理员再取消：返回 Member，推送 member.updated", async () => {
+    const { db, api } = setup();
+    const frames: ServerFrame[] = [];
+    db.listeners.add((f) => frames.push(f));
+    const { token } = await api.login({ username: "alice", password: "x" });
+    const up = await api.updateMemberRole(token, IDS.tDev, IDS.mCarol, { role: "admin" });
+    expect(up).toMatchObject({ id: IDS.mCarol, role: "admin" });
+    expect(frames.at(-1)).toMatchObject({ type: "member.updated", team_id: IDS.tDev, data: { id: IDS.mCarol, role: "admin" } });
+    const down = await api.updateMemberRole(token, IDS.tDev, IDS.mCarol, { role: "member" });
+    expect(down?.role).toBe("member");
+    const list = (await api.listMembers(token, IDS.tDev)).items;
+    expect(list.find((m) => m.id === IDS.mCarol)?.role).toBe("member");
+  });
+  it("普通成员 → 403；改 owner / bot → 403；不存在 → 404；role 非法 → 400", async () => {
+    const { api } = setup();
+    const carol = (await api.login({ username: "carol", password: "x" })).token;
+    await expect(api.updateMemberRole(carol, IDS.tDev, IDS.mDave, { role: "admin" })).rejects.toMatchObject({ status: 403, code: "forbidden" });
+    const alice = (await api.login({ username: "alice", password: "x" })).token;
+    const bob = (await api.login({ username: "bob", password: "x" })).token;
+    await expect(api.updateMemberRole(bob, IDS.tDev, IDS.mAlice, { role: "member" })).rejects.toMatchObject({ status: 403 });
+    await expect(api.updateMemberRole(alice, IDS.tDev, IDS.mHelper, { role: "admin" })).rejects.toMatchObject({ status: 403 });
+    await expect(api.updateMemberRole(alice, IDS.tDev, "nope", { role: "admin" })).rejects.toMatchObject({ status: 404 });
+    await expect(api.updateMemberRole(alice, IDS.tDev, IDS.mDave, { role: "owner" as "admin" })).rejects.toMatchObject({
+      status: 400,
+      details: { field: "role" },
+    });
+  });
+});
