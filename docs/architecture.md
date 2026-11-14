@@ -1,182 +1,181 @@
 # TeAms 后端架构
 
-> 技术栈：Go 1.26、PostgreSQL 18（本机 Homebrew，专用库 `teams`）。前后端分离，同一仓库：`frontend/`（Tina）、`backend/` 和 `docs/`（Gus）。接口细节见 [api.md](./api.md)，部署见 [deploy.md](./deploy.md)。
+> 技术栈：Go 1.26、PostgreSQL 18。前后端分离，同一仓库：`frontend/`（Tina）、`backend/` 和 `docs/`（Gus）。接口细节见 [api.md](./api.md)，部署见 [deploy.md](./deploy.md)。本文描述**第二阶段已实现**的结构。
 
 ## 1. 总览
 
 ```
-浏览器 (frontend, Vite dev :5173 → 代理)
+浏览器 (frontend, Vite dev :5190；生产为 Caddy 静态文件)
    │  REST /api/v1/*        WS /api/v1/ws
    ▼
 teams-server  (Go, 127.0.0.1:8090)
-   ├─ httpapi     路由、中间件（鉴权、CORS、限流、request id、错误格式）
-   ├─ auth        注册/登录、会话令牌、bot 令牌校验
-   ├─ teams       team、成员、角色
-   ├─ channels    频道
-   ├─ messages    发送/分页/编辑/删除、mention 解析、trigger_depth 计算
-   ├─ attachments 上传校验、存储、签名 URL
-   ├─ avatars     用户头像 / team 图标 / bot 头像（上传或远程拉取转存）
-   ├─ bots        bot 管理、令牌轮换、webhook 配置
-   ├─ webhook     投递队列 worker、签名、重试、防循环
-   ├─ realtime    WebSocket hub（按 team 扇出事件）
-   └─ storage     文件存储接口（本地磁盘；可替换对象存储）
+   ├─ httpapi     路由 + 全部 handler（auth/teams/members/invites/channels/messages/uploads/bots/bot-runs/ws）
+   ├─ webhook     投递队列 worker、HMAC 签名、重试、运行状态回调
+   ├─ realtime    WebSocket hub（按 team 扇出 / 按主体定向）
+   ├─ netguard    出站 HTTP 安全拨号（webhook 与远程头像共用）
+   └─ storage     文件存储（本地磁盘）
    │
-   ├──► PostgreSQL（数据 + webhook 投递队列）
-   ├──► 本地磁盘 TEAMS_UPLOAD_DIR
-   └──► 出站 HTTPS → Grok Bot webhook
+   ├──► PostgreSQL（业务数据 + webhook 投递队列）
+   ├──► 本地磁盘 TEAMS_UPLOAD_DIR（附件、头像）
+   └──► 出站 HTTPS → Bot webhook（如 Grok Bot）
                          │
-Grok Bot 处理后  ───────┘  POST /api/v1/channels/{id}/messages (Bearer <BOT_TOKEN>)
+Bot 处理后  ─────────────┘  POST /api/v1/channels/{id}/messages (Bearer <BOT_TOKEN>, reply_to=触发消息)
 ```
 
-单进程部署即可满足第一版；所有状态在 PostgreSQL 和上传目录里，进程可随时重启。
+单进程部署；状态全在 PostgreSQL 和上传目录里，进程可随时重启（投递队列不丢）。限流器和 WS hub 在进程内存中，因此**只支持单实例**。
 
-## 2. 目录结构（计划）
+## 2. 目录结构
 
 ```
 backend/
-├── cmd/teams-server/main.go      # 入口：读配置、连库、跑迁移、启动 HTTP + worker
+├── cmd/teams-server/main.go      # 入口：读 .env（或 TEAMS_ENV_FILE）→ 连库 → 迁移 → worker + 清理 + HTTP，优雅退出
+├── migrations/                   # 0001_init.sql、0002_invites.sql、0003_bot_runs.sql（embed 进二进制）
 ├── internal/
-│   ├── config/                   # 环境变量解析与校验
-│   ├── db/                       # pgxpool、事务助手、迁移执行器
-│   ├── httpapi/                  # 路由（net/http ServeMux 方法+路径模式）、中间件、错误输出
-│   ├── auth/                     # argon2id、令牌生成与哈希、会话
-│   ├── teams/ channels/ messages/ attachments/ bots/
-│   ├── avatars/                  # 头像存储、远程拉取（复用 netguard）
-│   ├── netguard/                 # 出站 HTTP 安全拨号（拒绝内网 IP），webhook 与头像拉取共用
+│   ├── config/                   # 环境变量解析与校验（LoadDotEnv、FromLookup）
+│   ├── db/                       # pgxpool、迁移执行器（schema_migrations + advisory lock）
+│   ├── apierr/                   # 统一错误类型与 code
+│   ├── auth/                     # argon2id、令牌生成（tas_ / tab_ 前缀）与 SHA-256 哈希
 │   ├── mention/                  # <@uuid> 解析与 content_plain 渲染
-│   ├── webhook/                  # 队列 worker、HMAC、重试、SSRF 防护、限流
-│   ├── realtime/                 # WebSocket hub/client
-│   ├── storage/                  # Storage 接口 + localdisk 实现
-│   ├── secretbox/                # AES-GCM 加解密 webhook 密钥
-│   └── apierr/                   # 统一错误类型与 code
-├── migrations/                   # 0001_init.sql …（embed 进二进制）
-├── .env.example                  # 配置模板（占位符）
-└── README.md
+│   ├── netguard/                 # IP 黑名单、URL 校验、安全 http.Client（每跳重定向重新校验）
+│   ├── secretbox/                # 由 TEAMS_SECRET_KEY 派生加密子密钥（AES-GCM）和签名子密钥（HMAC）
+│   ├── ratelimit/                # 内存滑动窗口限流
+│   ├── media/                    # 文件头嗅探（含 mp4/mov ftyp）、分类、图片尺寸
+│   ├── storage/                  # LocalDisk：原子写入（临时文件 + rename）、key 校验
+│   ├── realtime/                 # Hub / Client / Event
+│   ├── webhook/                  # Sign/Verify、Send、Worker、RunReason
+│   └── httpapi/                  # server.go（中间件、鉴权模式）、views.go（JSON 视图与查询）、
+│                                 # teams.go、invites.go、messages.go、uploads.go、bots.go、botruns.go、ws.go、routes.go
+│                                 # *_test.go：集成测试（teams_test 库）
+├── .env.example                  # 配置模板（只有占位符）
+└── go.mod
 ```
 
-依赖尽量少：`github.com/jackc/pgx/v5`（数据库）、`github.com/coder/websocket`（WS）、`golang.org/x/crypto/argon2`（密码）、`github.com/google/uuid`（UUIDv7）。路由用标准库 `net/http`。迁移用自写的简单执行器（`schema_migrations` 表 + embed 的 SQL 文件），测试用真实 PostgreSQL 测试库（`teams_test`）。
+依赖：`jackc/pgx/v5`、`coder/websocket`、`google/uuid`（UUIDv7）、`golang.org/x/crypto`（argon2id）、`golang.org/x/image`（webp 尺寸）。路由用标准库 `net/http` 方法+路径模式。
 
 ## 3. 数据表
 
 | 表 | 关键列 | 说明 |
 |---|---|---|
-| `users` | `id uuid pk`, `username citext unique`, `password_hash`, `display_name`, `avatar_id null`, `created_at` | 人类账号 |
-| `sessions` | `id`, `user_id fk`, `token_hash bytea unique`, `expires_at`, `last_used_at`, `created_at`, `user_agent` | 会话令牌（只存 SHA-256） |
-| `teams` | `id`, `name`, `description`, `icon_avatar_id null`, `owner_user_id`, `created_at`, `deleted_at` | |
-| `team_members` | `id uuid pk`（= member_id）, `team_id fk`, `type ('user'|'bot')`, `user_id null`, `bot_id null`, `role ('owner'|'admin'|'member'|'bot')`, `joined_at`, `left_at` | 统一成员身份；`unique(team_id,user_id)`；check: type 与 user_id/bot_id 一致 |
-| `bots` | `id`, `team_id`, `member_id unique`, `name`, `display_name`, `description`, `avatar_id null`, `avatar_source_url`, `token_hash bytea unique`, `token_prefix`, `created_by_member_id`, `created_at`, `deleted_at` | `unique(team_id, lower(name))` |
-| `bot_webhooks` | `bot_id pk`, `url`, `enabled`, `secret_header_name`, `secret_header_value_enc bytea`, `signing_secret_enc bytea`, `updated_at` | 密钥 AES-GCM 加密 |
-| `channels` | `id`, `team_id`, `name`, `topic`, `is_default`, `created_by_member_id`, `created_at`, `deleted_at` | `unique(team_id, lower(name)) where deleted_at is null` |
-| `messages` | `id uuid pk`, `seq bigint identity unique`, `team_id`, `channel_id`, `sender_member_id`, `content text`, `reply_to uuid null`, `trigger_depth smallint`, `client_msg_id`, `created_at`, `edited_at`, `deleted_at` | 索引 `(channel_id, seq)`；`unique(sender_member_id, client_msg_id)` |
-| `message_mentions` | `message_id`, `member_id`, `position` | pk(message_id, member_id)；索引 member_id（"提到我的"） |
-| `attachments` | `id`, `team_id`, `uploader_member_id`, `message_id null`, `kind ('image'|'video')`, `mime_type`, `size_bytes`, `file_name`, `storage_key`, `sha256`, `width`, `height`, `duration_ms`, `created_at` | 未引用超 24h 由清理任务删除 |
-| `webhook_deliveries` | `id`, `bot_id`, `message_id`, `channel_id`, `event`, `status`, `attempts`, `next_attempt_at`, `last_status_code`, `last_error`, `payload jsonb`, `created_at`, `finished_at` | 既是投递队列也是日志；`unique(bot_id, message_id)`；索引 `(status, next_attempt_at)`、`(bot_id, channel_id, created_at)` |
-| `avatars` | `id uuid pk`, `owner_kind ('user'|'team'|'bot')`, `owner_id`, `mime_type`, `size_bytes`, `width`, `height`, `sha256`, `storage_key`, `source_url null`, `created_at` | 头像/图标，与消息附件分开；公开读取 |
-| `schema_migrations` | `version`, `applied_at` | 迁移记录 |
-
-删除策略：team/频道/bot 软删除（`deleted_at`），消息软删除；硬删由后续管理任务处理。
+| `users` | id, username(唯一, 不区分大小写), password_hash, display_name, avatar_id | |
+| `sessions` | token_hash, user_id, expires_at, last_used_at | 只存令牌 SHA-256；滑动续期 |
+| `avatars` | id, owner_kind, owner_id, mime_type, sha256, storage_key, source_url | 用户头像、team 图标、bot 头像共用；不可变，换图即新行 |
+| `teams` | id, name, description, icon_avatar_id, owner_user_id, deleted_at | |
+| `team_members` | id(=member_id), team_id, type(user/bot), user_id / bot_id, role, left_at | 统一成员身份；(team,user) 在职唯一 |
+| `bots` | id, team_id, member_id, name, display_name, description, avatar_id, avatar_source_url, avatar_shape, avatar_color, token_hash, deleted_at | 样式字段原样存储 |
+| `bot_webhooks` | bot_id, url, enabled, secret_header_name, secret_header_value_enc, signing_secret_enc | 密钥 AES-GCM 加密 |
+| `channels` | id, team_id, name(team 内唯一), topic, is_default, deleted_at | |
+| `messages` | id, seq(identity), team_id, channel_id, sender_member_id, content, reply_to, trigger_depth, client_msg_id, edited_at, deleted_at | 索引 (channel_id, seq)；(sender, channel, client_msg_id) 非唯一索引 + 24h 窗口查重 |
+| `message_mentions` | message_id, member_id, position | |
+| `attachments` | id, team_id, uploader_member_id, message_id(可空), kind, mime_type, size_bytes, storage_key, sha256, width, height | 未引用 24h 后清理 |
+| `team_invites` | id, team_id, code(唯一, 10 位 base62), expires_at, max_uses, uses, revoked_at, created_by | |
+| `webhook_deliveries` | id, bot_id, message_id, channel_id, event, status, attempts, next_attempt_at, last_status_code, last_error, **run_status, run_reason, reply_message_id, run_updated_at** | 投递队列 + 投递日志 + bot 运行状态；保留 7 天 |
 
 ## 4. 配置（环境变量）
 
-启动时读取进程环境；若存在 `backend/.env`（已 gitignore）则先加载它，进程环境优先。
+完整列表见 `backend/.env.example`（占位符）。真实值只放 `backend/.env`（已被 .gitignore 忽略，权限 600）或生产的 `/etc/teams/teams.env`。
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `TEAMS_HTTP_ADDR` | `127.0.0.1:8090` | 监听地址。**只绑回环**，公网暴露交给隧道/反代 |
-| `TEAMS_PUBLIC_BASE_URL` | `http://127.0.0.1:8090` | 生成绝对链接（webhook 里的附件 URL、reply url） |
-| `TEAMS_DATABASE_URL` | 必填 | `postgres://<DB_USER>:<DB_PASSWORD>@127.0.0.1:5432/teams?sslmode=disable` |
-| `TEAMS_SECRET_KEY` | 必填 | 32 字节 base64；用于 AES-GCM 加密 webhook 密钥、签名附件 URL |
-| `TEAMS_UPLOAD_DIR` | `./data/uploads` | 本地文件存储根目录 |
-| `TEAMS_CORS_ORIGINS` | `http://localhost:5173` | 逗号分隔；同时用于 WS Origin 校验 |
-| `TEAMS_SESSION_TTL` | `720h` | 会话有效期 |
-| `TEAMS_MAX_IMAGE_BYTES` / `TEAMS_MAX_VIDEO_BYTES` | 10 MiB / 100 MiB | 上传上限 |
-| `TEAMS_MAX_AVATAR_BYTES` | 5 MiB | 头像/图标上限 |
-| `TEAMS_MAX_TRIGGER_DEPTH` | `3` | 防循环深度上限 |
-| `TEAMS_WEBHOOK_RATE_PER_MINUTE` | `10` | 每 bot 每频道每分钟触发上限 |
-| `TEAMS_WEBHOOK_TIMEOUT` | `10s` | 单次投递超时 |
-| `TEAMS_WEBHOOK_ALLOW_PRIVATE` | `false` | 允许 http 和内网地址的 webhook / 远程头像拉取（仅本地调试） |
-| `TEAMS_LOG_LEVEL` | `info` | slog 级别 |
+| `TEAMS_ENV` | `production` | `dev` 才允许开发开关 |
+| `TEAMS_HTTP_ADDR` | `127.0.0.1:8090` | 只监听回环 |
+| `TEAMS_PUBLIC_BASE_URL` | `http://127.0.0.1:8090` | 生成 webhook payload 里的绝对 URL |
+| `TEAMS_DATABASE_URL` | — | `postgres://teams_app:<DB_PASSWORD>@127.0.0.1:5432/teams_dev?sslmode=disable` |
+| `TEAMS_TEST_DATABASE_URL` | — | 集成测试库 `teams_test`（只被 `go test` 使用） |
+| `TEAMS_SECRET_KEY` | — | ≥32 字节随机（`openssl rand -base64 48`），丢失则 webhook 密钥无法解密、附件签名失效 |
+| `TEAMS_UPLOAD_DIR` | `./data/uploads` | |
+| `TEAMS_CORS_ORIGINS` | `http://localhost:5190,http://127.0.0.1:5190` | 逗号分隔；同时用于 WS Origin 校验 |
+| `TEAMS_WEBHOOK_ALLOW_INSECURE_LOCAL` | `false` | 仅 `TEAMS_ENV=dev` 生效：允许 http 和本机/内网 webhook 与头像地址 |
+| `TEAMS_SESSION_TTL` | `720h` | |
+| `TEAMS_MAX_IMAGE_BYTES` / `_VIDEO_BYTES` / `_AVATAR_BYTES` | 10MB / 100MB / 5MB | |
+| `TEAMS_MAX_TRIGGER_DEPTH` | 3 | |
+| `TEAMS_WEBHOOK_RATE_PER_MINUTE` | 10 | 每 bot 每频道 |
+| `TEAMS_WEBHOOK_TIMEOUT` / `TEAMS_WEBHOOK_WORKERS` | 10s / 4 | |
+| `TEAMS_AUTH_RATE_PER_MINUTE` / `TEAMS_INVITE_PREVIEW_RATE_PER_MINUTE` | 20 / 30 | 每 IP |
+| `TEAMS_LOG_LEVEL` | `info` | |
 
-端口选择：2026-11-14 在用户 Mac 上 `lsof -iTCP -sTCP:LISTEN` 检查，3000（zhw AI 客服）、3306、4321、5000、5173、5432、6379、7000、13001 等已占用，**8090 空闲**，选定 8090（8080 也空闲，作为备选）。
+端口：用户 Mac 上 3000 是 zhw AI 客服、5173 等已占用，后端选 **8090**；前端开发端口 **5190**。
+
+本地数据库：Homebrew PostgreSQL 18 上的专用角色 `teams_app`（NOSUPERUSER / NOCREATEDB / NOCREATEROLE），库 `teams_dev`、`teams_test` 归它所有。
 
 ## 5. 请求处理与鉴权
 
-- 中间件链：request id → 访问日志（不记录 Authorization、token、密码字段）→ CORS → 鉴权（解析 Bearer，按前缀 `tas_`/`tab_` 区分会话/bot）→ 限流 → handler。
-- 权限检查在 service 层：先确认"调用者在该 team 有有效成员身份"，再检查角色；bot 只能访问自己 team，且只允许 api.md §6.3 列出的接口。对无权访问的资源返回 404 而不是 403，避免枚举。
-- 令牌：32 字节 crypto/rand，base64url，前缀区分类型；库里存 SHA-256。
+中间件：request id → recover → CORS（白名单）→ handler。每个路由声明访问模式：`public` / `userOnly` / `botOnly` / `anyAuth`。令牌按前缀区分会话（`tas_`）和 bot（`tab_`），查哈希得到 principal（`user:<id>` 或 `bot:<id>`）。团队内权限由 `team_members` 角色判断；不可见资源返回 404。
+
+客户端 IP：连接地址；仅当连接来自回环（Caddy 反代）时信任 `X-Forwarded-For` / `CF-Connecting-IP`。
 
 ## 6. 消息发送流程
 
-在一个数据库事务内：
+单事务：
+1. `client_msg_id` → `pg_advisory_xact_lock(发送者+频道+id)`，24h 内已存在则返回原消息（200）。
+2. 校验 `reply_to` 同频道，计算 `trigger_depth`（§9）。
+3. 解析 `<@uuid>`，只保留本 team 在职成员。
+4. 插入消息、mentions，认领附件（必须本人上传、未被引用）。
+5. 若发送者是 bot 且带 `reply_to`：把该 bot 由触发消息产生的运行标记为 `completed`。
+6. 为被 @ 的 bot 写投递记录（防循环、限流、无 webhook → `failed/no_webhook`）。
 
-1. 校验成员身份、频道归属、内容长度、附件（本 team、本人上传、未被引用）。
-2. `client_msg_id` 幂等检查。
-3. 解析 `<@uuid>` → 查 `team_members`，得到有效 mentions。
-4. 计算 `trigger_depth`（见 §9）。
-5. 插入 `messages`、`message_mentions`，更新附件 `message_id`。
-6. 对每个被 @ 的、配置了 webhook 的 bot，做防循环/限流判断，插入 `webhook_deliveries`（`pending` 或 `skipped_*`）。
-7. 提交后：发布 `message.created` 到 realtime hub；`NOTIFY webhook_pending` 唤醒 worker。
+提交后：推送 `message.created`、`bot.run.completed`、`bot.run.started` / `bot.run.failed(no_webhook)`，唤醒 worker。
+
+已知限制：`seq` 由 identity 分配，并发事务提交顺序可能与 seq 顺序不一致，极端情况下 `after=` 补拉可能漏掉一条稍晚提交的较小 seq。单实例低并发下影响很小；后续可改为按频道加锁分配 seq。
 
 ## 7. 实时推送
 
-- `realtime.Hub` 维护 `team_id → 连接集合`。连接鉴权后加载用户所在 team 列表并注册。
-- 事件在业务事务提交**之后**发布（避免推送了回滚的数据）。
-- 每个连接一个有界发送队列（如 256），满了就断开该慢客户端，由其重连补拉。
-- 成员加入/移除 team 时更新 hub 订阅。
-- 单进程内存 hub 足够第一版；若将来多实例，改为 PostgreSQL `LISTEN/NOTIFY` 或 Redis pub/sub 扇出，hub 接口不变。
-- 心跳：服务端 60 秒读超时；客户端 25 秒发 `ping`。
-- **不做在线状态**：不记录、不推送 presence/typing，hub 只负责数据变更事件。
+- 连接注册到 Hub，订阅其所在 team 集合；`PublishTeam` 扇出，`PublishTeamExcept` 排除某主体，`PublishPrincipal` 定向。
+- 加入 team：`SetTeam(主体, team, true)` 后给本人发 `team.joined`；其他人收 `member.joined`。移出/退出：先取消订阅，再给 team 发 `member.left`、给本人发 `team.removed`。
+- 每个连接有 256 帧发送缓冲，满了即踢掉（客户端重连后按 seq 补拉）。
+- 无 presence / typing。
 
 ## 8. 文件存储
 
-- `storage.Storage` 接口：`Put(ctx, key, reader) / Open(ctx, key) / Delete(ctx, key)`。
-- 默认实现 `localdisk`：根目录 `TEAMS_UPLOAD_DIR`，key 形如 `<team_id>/<yyyy>/<mm>/<attachment_id>`（不使用用户文件名，防路径穿越）。
-- 上传流程：`http.MaxBytesReader` 限制总大小 → 读前 512 字节 `http.DetectContentType` 嗅探 + 白名单 → 流式写临时文件并计算 sha256 → 原子重命名 → 写 `attachments`。图片尝试读取宽高（标准库 image 解码 config）。
-- 下载：`http.ServeContent`（支持 Range），加 `nosniff`。签名 URL = HMAC(`TEAMS_SECRET_KEY`, `attachment_id|exp`)。
-- 将来换对象存储（S3/R2/OSS）：实现同一接口，下载改为 302 到对象存储预签名 URL。
-- 清理任务每小时删除 24h 未被引用的附件和不再被引用的旧头像。
-
-### 头像 / 图标
-
-- 独立表 `avatars`，文件在 `TEAMS_UPLOAD_DIR/avatars/<avatar_id>`，公开路由 `/api/v1/avatars/{id}`（长缓存）。
-- 来源：multipart 上传，或 `avatar_url` 远程拉取（`netguard` 拒绝内网地址、只允许 http/https、10 秒超时、5 MB、最多 3 次重定向、嗅探类型）。
-- 同 `source_url` + 同 sha256 视为未变化，不生成新记录、不推送，支持 bot 定时同步。
-- 变更后发布 `member.updated` / `team.updated`。
-- 前端（Discord 式布局）所需：team 列表带 `icon_url`，成员列表带 `type` 和 `avatar_url`。
+- `storage.LocalDisk`：key 形如 `attachments/<team>/<yyyy>/<mm>/<id>`、`avatars/<id>`，写临时文件后 rename；key 有字符白名单，不含用户文件名。
+- 附件流式上传，边写边计 SHA-256，超限删除；内容嗅探决定类型。
+- 附件 URL：`/api/v1/attachments/<id>/content?exp=&sig=`，`sig = base64url(HMAC-SHA256(sign_key, "att|" + id + "|" + exp))`，1 小时有效。
+- 头像公开、不可变（`Cache-Control: immutable`），更换即生成新 id。远程头像下载一次转存，同 URL 同 SHA-256 不重复保存。
+- 每小时清理：未引用附件（24h）、孤儿头像（1h）、旧投递日志（7d）、过期会话。
 
 ## 9. 防循环设计
 
-目标：bot A 和 bot B 互相 @ 时不会无限触发 webhook。
+- `trigger_depth`：人 = 0；bot 带 `reply_to` = 父 depth + 1；bot 不带 = 1。仅 depth ≤ `TEAMS_MAX_TRIGGER_DEPTH` 的消息触发。
+- 频率：同一 bot 同一频道 60 秒内最多 N 次，在事务内用 `pg_advisory_xact_lock(bot+频道)` 串行计数，避免并发超发。
+- bot @ 自己忽略；编辑不触发。
+- 跳过的投递以 `skipped_depth` / `skipped_rate_limited` 记录，不推送运行事件。
 
-1. **trigger_depth**（消息属性，服务端计算）：
-   - 用户发 → 0；
-   - bot 发且 `reply_to` 指向同频道消息 → `parent.trigger_depth + 1`；
-   - bot 发且无 `reply_to` → 1。
-   - 只有 `trigger_depth <= TEAMS_MAX_TRIGGER_DEPTH`（默认 3）才入队 webhook。人发起一次对话，bot 之间最多再接力 3 轮。
-   - 绕过考虑：bot 故意不带 `reply_to` 会把深度重置为 1，所以需要第 2 层兜底。
-2. **频率限制**：入队前按 `webhook_deliveries` 统计 `(bot_id, channel_id)` 最近 60 秒内非 skipped 的记录数，`>= TEAMS_WEBHOOK_RATE_PER_MINUTE` 则写 `skipped_rate_limited`。在同一事务里对 `(bot_id, channel_id)` 取 `pg_advisory_xact_lock` 保证计数准确。
-3. **自 @ 不触发**；`unique(bot_id, message_id)` 保证一条消息只投递一次。
-4. bot 发消息频率上限（30 条/分钟/频道）进一步限制失控 bot。
-5. 载荷里带 `loop_guard`，让接收方（Grok Bot）也知道当前深度，可自行决定是否继续 @ 其他 bot。
+## 10. Webhook 投递 worker 与 bot 运行状态
 
-## 10. Webhook 投递 worker
+- N 个 goroutine（默认 4）：`UPDATE … WHERE id IN (SELECT … WHERE status='pending' AND next_attempt_at<=now() ORDER BY next_attempt_at LIMIT 5 FOR UPDATE SKIP LOCKED) SET next_attempt_at = now()+租约(2 分钟)` 领取；入队时 `Wake()`，否则每秒轮询。崩溃后租约到期自动重新领取。
+- **发送时**生成 payload（最新 bot 资料、新签名附件 URL）；消息已删除则放弃（`failed`，运行 reason `message_deleted`）。
+- 签名 `X-TeAms-Signature = sha256=hex(HMAC(signing_secret, ts + "." + body))`，加配置的密钥头。
+- HTTP 客户端：`netguard` 安全拨号（连接时校验 IP，防 DNS rebinding）、每跳重定向重新校验、不使用环境代理、10 秒超时。
+- 结果：2xx → `succeeded`；5xx/429/超时/网络错误 → 10s/60s/300s（±20% 抖动）后重试，共 4 次；其它 → `failed`。`last_error` 只记错误类别（`http_503`、`timeout`…），不记响应体。
 
-- N 个 goroutine（默认 4）循环：`SELECT … FROM webhook_deliveries WHERE status='pending' AND next_attempt_at <= now() ORDER BY next_attempt_at LIMIT 10 FOR UPDATE SKIP LOCKED`，空闲时等待 `LISTEN webhook_pending` 或 5 秒轮询。
-- 发送：载荷在入队时生成并存 `payload`（附件签名 URL 在发送时刷新）；计算 `X-TeAms-Signature = sha256=hex(HMAC(signing_secret, ts + "." + body))`，加配置的密钥头。
-- HTTP 客户端：10 秒超时、不跟随重定向、自定义 `DialContext` 在连接时校验目标 IP 非内网/回环/链路本地（防 DNS rebinding 型 SSRF），可由 `TEAMS_WEBHOOK_ALLOW_PRIVATE` 关闭。
-- 结果：2xx → `succeeded`；可重试错误 → `attempts+1`，按 10s/60s/300s 退避；4 次后 `failed`。
-- 投递记录保留 7 天。
+运行状态机（`run_status`，存在投递行上）：
 
-## 11. 安全要点
+```
+入队 ──► started ──2xx──► delivered ──bot 回复 reply_to──► completed
+            │                 ▲
+            ├─可重试失败─► retrying ─┘(重试成功)
+            └─最终失败 / 无 webhook ─► failed
+任意非 completed 状态 ──bot 回复──► completed（completed 之后不再被覆盖）
+```
 
-- 密码 argon2id；令牌只存哈希；webhook 密钥加密存储且只写不读。
-- 日志、错误信息、投递记录里不出现令牌和密钥（`last_error` 只记状态码和错误类别）。
-- 后端只监听 127.0.0.1；公网暴露通过隧道或反向代理（见 deploy.md）。
-- 上传按内容嗅探、限大小、文件名不进路径。
-- 登录、注册、发消息、上传都有限流。
+每次状态变化通过 worker 的 `Notify` 回调推送 `bot.run.*` 给整个 team。`GET /channels/{id}/bot-runs?active=true` 读 started/delivered/retrying 且 10 分钟内的行。
 
-## 12. 测试策略
+## 11. 邀请
 
-- 单元测试：mention 解析、trigger_depth 计算、HMAC 签名、SSRF 地址判断、配置解析。
-- 集成测试：连接专用测试库 `teams_test`（每个测试包跑迁移、每个测试用事务或清表），`httptest` 起完整路由，覆盖注册→建 team→建频道→发消息→WS 收到事件→@bot→本地 `httptest.Server` 收到 webhook（验签）→bot 用令牌回复→深度与限流跳过。
-- `go vet` + `go test -race ./...`。
+- code：`crypto/rand` 生成 10 位 base62（约 59.5 bit），唯一约束冲突时重试。
+- 接受：单事务 `SELECT … FROM team_invites … FOR UPDATE`，判断已是成员（直接返回、不计数）→ 失效原因（revoked > expired > exhausted）→ 插入成员 → `uses = uses + 1`。并发接受同一 `max_uses=N` 的邀请，最多 N 人成功（有并发测试）。
+- 预览接口公开，按 IP 限流。
+
+## 12. 安全要点
+
+- 密码 argon2id；令牌只存哈希；webhook 密钥 AES-GCM 加密且只写不读；签名密钥只在创建/轮换时返回一次。
+- 日志、错误、投递记录里不出现令牌和密钥。
+- 后端只监听 127.0.0.1；公网暴露只通过反向代理（见 deploy.md），5432 / 8090 永不对外。
+- 上传按内容嗅探、限大小、`nosniff`，文件名不进路径。
+- 出站请求 SSRF 防护；`198.18.0.0/15` 故意放行（Clash fake-ip），生产服务器上没有 fake-ip 时这一段本来就不可路由。
+- 开发开关 `TEAMS_WEBHOOK_ALLOW_INSECURE_LOCAL` 只在 `TEAMS_ENV=dev` 生效。
+
+## 13. 测试
+
+- 单元测试：mention、netguard、webhook 签名/分类、secretbox、media 嗅探、ratelimit、auth、config、storage、realtime、样式字段规范化、trigger_depth、邀请码。
+- 集成测试（`internal/httpapi`）：`TestMain` 重建 `teams_test` 的 public schema 并迁移；`httptest` 起完整路由，本地 `httptest.Server` 当 webhook 接收器（`AllowInsecureLocal` 仅测试中打开）。覆盖注册→team→频道→消息分页→WS 事件→@bot→验签→bot 回复→深度/限流跳过→重试/失败→bot 运行事件→邀请（含并发）→team 修改/退出→附件签名刷新→bot 资料与头像。
+- 命令：`go vet ./...`、`go build ./...`、`go test -race ./...`（需要 `TEAMS_TEST_DATABASE_URL`，从 `backend/.env` 读取）。
