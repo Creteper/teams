@@ -38,6 +38,7 @@ type Config struct {
 	UserMsgRatePer10s          int // 0 disables
 	BotMsgRatePerMinute        int // per bot per channel; 0 disables
 	BotProfileRatePerMinute    int // PATCH /bots/me etc; 0 disables
+	BotAPIRatePerMinute        int // per bot: GETs + PATCH/DELETE of messages; 0 disables
 	InvitePreviewRatePerMinute int // per IP; 0 disables
 	LogLevel                   slog.Level
 	// Web Push (VAPID). Push is disabled unless all three are set.
@@ -150,6 +151,7 @@ func FromLookup(lookup func(string) (string, bool)) (*Config, error) {
 		UserMsgRatePer10s:          20,
 		BotMsgRatePerMinute:        30,
 		BotProfileRatePerMinute:    6,
+		BotAPIRatePerMinute:        120,
 		InvitePreviewRatePerMinute: intv("TEAMS_INVITE_PREVIEW_RATE_PER_MINUTE", 30),
 		Argon2Time:                 2,
 		Argon2MemKiB:               19 * 1024,

@@ -50,7 +50,7 @@
 | 413 | `payload_too_large` | 上传超限（`details.max_bytes`） |
 | 415 | `unsupported_media_type` | 文件类型不允许（`details.detected`）或 Content-Type 不对 |
 | 422 | `avatar_fetch_failed` | 远程头像拉取失败（`details.reason`，见 §10.2） |
-| 429 | `rate_limited` | 频率超限，带 `Retry-After`（秒） |
+| 429 | `rate_limited` | 频率超限，带 `Retry-After`（秒，向上取整，最小 1）；各项限额见 §11 |
 | 500 / 503 | `internal` / — | 服务端错误 / healthz 数据库不可用 |
 
 每个响应带 `X-Request-Id`。
@@ -692,7 +692,12 @@ curl -s "$BASE/api/v1/teams/<team_id>/members/<member_id>" -H "$AUTH"
 | `GET /teams/{id}/members` | 100 / 200 | `cursor`、`next_cursor`、`has_more` |
 | `GET /teams/{id}/channels` | 不分页 | — |
 
-频率限制（§11）：bot 发消息每 bot 每频道 30 条/分钟（超出 429，`Retry-After`），编辑 / 删除 / 读取目前不限流，但请按需拉取（例如每次被 @ 只拉一两页），不要轮询——实时消息请用 WebSocket（§9）或 webhook。
+频率限制（§11）：
+- **bot 令牌请求总配额：每个 bot 每分钟 120 次**（滑动窗口，按 bot 计，同一 bot 的所有令牌请求共用）。计入：**所有 GET**（频道、消息列表、单条消息、成员、`/bots/me`、附件信息等）以及 **`PATCH` / `DELETE /api/v1/messages/{id}`**（编辑、删除消息）。
+- **发消息不计入**这 120 次，仍是每 bot 每频道 30 条/分钟；`PATCH /bots/me` 和头像另有 6 次/分钟；`POST /messages/{id}/decline`、上传附件、`POST /attachments/urls` 不计入；WebSocket 连接（`GET /ws`）和公开的 GET（附件内容 `/attachments/{id}/content`、头像 `/avatars/{id}`、`/healthz`）不计入。
+- 超出 → `429 rate_limited`，`Retry-After: <秒>`（到最早一次请求滑出窗口为止，向上取整），错误体与其它错误相同：`{"error":{"code":"rate_limited","message":"请求过于频繁",…}}`。收到 429 请按 `Retry-After` 等待后再试，不要立即重试。
+- 用户会话不受这条限制。
+- 建议按需拉取（例如每次被 @ 只拉一两页），不要轮询——实时消息请用 WebSocket（§9）或 webhook。
 
 ---
 
@@ -796,6 +801,7 @@ Service Worker 收到的 JSON（解密后）：
 | 用户发消息 | 每成员 20 条/10 秒 | — |
 | bot 发消息 | 每 bot 每频道 30 条/分钟 | — |
 | bot 改资料 | 每 bot 6 次/分钟 | — |
+| bot 令牌读取 / 编辑 / 删除 | 每 bot 120 次/分钟：所有 GET + `PATCH`/`DELETE /messages/{id}`；发消息不计入（§8.6） | — |
 | webhook 触发 | 每 bot 每频道 10 次/60 秒（超出记 skipped_rate_limited） | `TEAMS_WEBHOOK_RATE_PER_MINUTE` |
 
 IP 取连接地址；只有来自本机回环的请求（即 Caddy 反代）才信任 `X-Forwarded-For` / `CF-Connecting-IP`。限流在进程内存中，单实例有效。
@@ -859,3 +865,4 @@ IP 取连接地址；只有来自本机回环的请求（即 Caddy 反代）才�
 34. **文档补充（行为未变）**：频道名规则（去首尾空白、1–64 字符、只禁控制字符、不区分大小写唯一、409 `field: "name"`）、频道改名/删除权限表（默认频道可改名不可删、创建者可改名不可删）、软删除细节（§5.1）；`/me/avatar` 的 `member.updated` 推送、`DELETE` 幂等、字段名 `file`、各错误码、超过 4096 直接拒绝不缩放（§1、§10.1）；`member.updated` 的触发场景（§9.3）。
 35. **Bot 用自己的令牌查看历史和发消息**（§8.6，新增文档节）：核对并测试了 bot 令牌可以列频道、按 `before` / `after` 分页读消息、读单条（`GET /messages/{id}`）、带 `reply_to` 和 @ 发消息、编辑删除自己的消息、查成员列表和单个成员；这些接口原本就支持，权限限于 bot 所在 team（别的 team → 404，改删别人的消息 → 403）。webhook 载荷**不**携带上下文消息，需要上下文时 bot 自己拉（§7.2）。
 36. **webhook payload 的 `reply` 末尾新增 `history`**：`{ "method": "GET", "url": ".../channels/<channel_id>/messages?before=<message.seq>&limit=50" }`，即"拉触发消息之前的历史"的调用方式；`reply` 原有字段和顶层字段顺序不变。
+37. **bot 令牌请求限流**（§8.6、§11）：每个 bot 每分钟最多 120 次，计入 bot 令牌的所有 GET 请求和编辑 / 删除消息（`PATCH` / `DELETE /messages/{id}`）；超出返回 `429 rate_limited` + `Retry-After`（秒，向上取整）。发消息仍按每 bot 每频道 30 条/分钟单独计算、不占这 120 次；用户会话不受影响。之前文档写的"读取不限流"作废。

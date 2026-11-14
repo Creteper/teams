@@ -16,6 +16,13 @@ type Limiter struct {
 
 func New() *Limiter { return &Limiter{hits: map[string][]time.Time{}, now: time.Now} }
 
+// SetClock replaces the time source (tests only).
+func (l *Limiter) SetClock(now func() time.Time) {
+	l.mu.Lock()
+	l.now = now
+	l.mu.Unlock()
+}
+
 // Allow records a hit for key and reports whether it is within limit per
 // window. When rejected it returns the seconds until a slot frees up.
 // limit <= 0 always allows.

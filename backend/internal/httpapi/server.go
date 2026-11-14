@@ -149,7 +149,16 @@ const (
 
 type handlerFunc func(w http.ResponseWriter, r *http.Request) error
 
+// botAPILimited reports whether a route counts against the per-bot API
+// quota (cfg.BotAPIRatePerMinute): every GET, plus editing and deleting
+// messages. Sending messages has its own per-channel limit.
+func botAPILimited(pattern string) bool {
+	return strings.HasPrefix(pattern, "GET ") ||
+		pattern == "PATCH /api/v1/messages/{message_id}" || pattern == "DELETE /api/v1/messages/{message_id}"
+}
+
 func (s *Server) handle(pattern string, acc access, h handlerFunc) {
+	botLimited := botAPILimited(pattern)
 	s.mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
 		if acc != public {
 			tok := bearer(r)
@@ -169,6 +178,12 @@ func (s *Server) handle(pattern string, acc access, h handlerFunc) {
 			if acc == botOnly && p.Bot == nil {
 				writeErr(w, r, apierr.Forbidden("此接口只能用 bot 令牌调用"))
 				return
+			}
+			if botLimited && p.Bot != nil {
+				if ok, wait := s.limiter.Allow("botapi:"+p.Bot.ID, s.cfg.BotAPIRatePerMinute, time.Minute); !ok {
+					writeErr(w, r, apierr.RateLimited(wait))
+					return
+				}
 			}
 			r = r.WithContext(context.WithValue(r.Context(), principalKey, p))
 		} else if tok := bearer(r); tok != "" {
