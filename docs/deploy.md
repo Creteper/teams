@@ -1,6 +1,6 @@
 # TeAms 公网部署方案
 
-> **已选方案 B：阿里云服务器 + Caddy**。服务器 IP `123.57.134.175`，域名 `teams.ruanyoutech.com`。
+> **已选方案 B：阿里云服务器 + Caddy**。服务器 IP `123.57.134.175`，域名 `teams.lovekaifa.com`。
 > 本文是操作手册，**尚未实施**：本阶段没有连接服务器、没有部署、没有开放任何端口。
 > 文中所有口令、令牌、密钥一律是占位符（`<DB_PASSWORD>`、`<TEAMS_SECRET_KEY>` 等），真实值只在部署时生成并写入服务器上的 `/etc/teams/teams.env`，**不进仓库、不进文档、不进聊天记录**。
 
@@ -10,14 +10,14 @@
 - 但 Grok Bot 处理完要**回调** TeAms API（`POST /api/v1/channels/{id}/messages`），并下载 webhook 里的附件 URL，所以后端需要 Grok Bot 能访问的 HTTPS 地址（`TEAMS_PUBLIC_BASE_URL`）。
 - 团队成员不在同一局域网，前端也要公网访问。
 
-形态：前端静态文件与后端**同域**——`https://teams.ruanyoutech.com/` 前端，`/api/v1/*` 后端，`wss://teams.ruanyoutech.com/api/v1/ws` WebSocket，浏览器无跨域。
+形态：前端静态文件与后端**同域**——`https://teams.lovekaifa.com/` 前端，`/api/v1/*` 后端，`wss://teams.lovekaifa.com/api/v1/ws` WebSocket，浏览器无跨域。
 
 ---
 
 ## ⚠️ 上线前必读
 
 > **1. ICP 备案是前置条件。** `123.57.134.175` 属于阿里云中国大陆（北京）数据中心。大陆服务器上的域名在**完成 ICP 备案之前**，80/443 的 HTTP(S) 访问会被拦截（显示未备案提示页），Let's Encrypt 的 HTTP 验证也会失败，证书签不下来。
-> - 在阿里云「ICP 代备案管理系统」为 `ruanyoutech.com` 提交备案（主体信息、域名实名、服务器绑定该 ECS 实例），审核一般 1–3 周。
+> - 在阿里云「ICP 代备案管理系统」为 `lovekaifa.com` 提交备案（主体信息、域名实名、服务器绑定该 ECS 实例），审核一般 1–3 周。
 > - 备案通过、网站上线后 **30 天内**在「全国互联网安全管理服务平台」完成公安联网备案，并在页面底部展示 ICP 备案号（前端页脚，由 Tina 加）。
 > - 备案完成前**不要**把 DNS 指过去对外试用；如需提前联调，用下面的备选 C（ngrok，仅临时）。
 >
@@ -34,7 +34,7 @@
 >
 > 系统内再开 `ufw`（只放行 22/80/443）做第二道防线。
 >
-> **3. 生产配置必须是：** `TEAMS_ENV=production`，`TEAMS_PUBLIC_BASE_URL=https://teams.ruanyoutech.com`，`TEAMS_CORS_ORIGINS=https://teams.ruanyoutech.com`（同时是 WebSocket Origin 白名单），`TEAMS_WEBHOOK_ALLOW_INSECURE_LOCAL=false`。
+> **3. 生产配置必须是：** `TEAMS_ENV=production`，`TEAMS_PUBLIC_BASE_URL=https://teams.lovekaifa.com`，`TEAMS_CORS_ORIGINS=https://teams.lovekaifa.com`（同时是 WebSocket Origin 白名单），`TEAMS_WEBHOOK_ALLOW_INSECURE_LOCAL=false`。
 >
 > **4. SSH 凭据**：部署时由用户通过**加密卡片**提供（SSH 私钥或一次性口令），只在当次会话使用、不落盘到仓库或文档；部署完成后建议改为仅密钥登录并轮换。本文不包含任何密码。
 
@@ -46,7 +46,7 @@
 
 ```
 浏览器 / Grok Bot
-   │ https://teams.ruanyoutech.com   (443, Let's Encrypt 证书)
+   │ https://teams.lovekaifa.com   (443, Let's Encrypt 证书)
    ▼
 Caddy (systemd: caddy)
    ├─ /api/*        → reverse_proxy 127.0.0.1:8090   （含 WebSocket /api/v1/ws）
@@ -60,13 +60,13 @@ teams-server (systemd: teams，用户 teams，127.0.0.1:8090)
 
 ### B.2 DNS
 
-在 `ruanyoutech.com` 的 DNS 服务商（如阿里云云解析）添加：
+在 `lovekaifa.com` 的 DNS 服务商（如阿里云云解析）添加：
 
 | 主机记录 | 类型 | 记录值 | TTL |
 |---|---|---|---|
 | `teams` | A | `123.57.134.175` | 600 |
 
-验证：`dig +short teams.ruanyoutech.com` 应返回 `123.57.134.175`。（备案通过后再添加/生效。）
+验证：`dig +short teams.lovekaifa.com` 应返回 `123.57.134.175`。（备案通过后再添加/生效。）
 
 ### B.3 服务器初始化
 
@@ -137,11 +137,11 @@ sudo install -o root -g root -m 600 /dev/null /etc/teams/teams.env
 sudo tee /etc/teams/teams.env >/dev/null <<EOF2
 TEAMS_ENV=production
 TEAMS_HTTP_ADDR=127.0.0.1:8090
-TEAMS_PUBLIC_BASE_URL=https://teams.ruanyoutech.com
+TEAMS_PUBLIC_BASE_URL=https://teams.lovekaifa.com
 TEAMS_DATABASE_URL=postgres://teams_app:${DB_PASSWORD}@127.0.0.1:5432/teams?sslmode=disable
 TEAMS_SECRET_KEY=$(openssl rand -base64 48 | tr -d '\n')
 TEAMS_UPLOAD_DIR=/var/lib/teams/uploads
-TEAMS_CORS_ORIGINS=https://teams.ruanyoutech.com
+TEAMS_CORS_ORIGINS=https://teams.lovekaifa.com
 TEAMS_WEBHOOK_ALLOW_INSECURE_LOCAL=false
 TEAMS_LOG_LEVEL=info
 EOF2
@@ -153,11 +153,11 @@ sudo chmod 600 /etc/teams/teams.env
 ```
 TEAMS_ENV=production
 TEAMS_HTTP_ADDR=127.0.0.1:8090
-TEAMS_PUBLIC_BASE_URL=https://teams.ruanyoutech.com
+TEAMS_PUBLIC_BASE_URL=https://teams.lovekaifa.com
 TEAMS_DATABASE_URL=postgres://teams_app:<DB_PASSWORD>@127.0.0.1:5432/teams?sslmode=disable
 TEAMS_SECRET_KEY=<TEAMS_SECRET_KEY>
 TEAMS_UPLOAD_DIR=/var/lib/teams/uploads
-TEAMS_CORS_ORIGINS=https://teams.ruanyoutech.com
+TEAMS_CORS_ORIGINS=https://teams.lovekaifa.com
 TEAMS_WEBHOOK_ALLOW_INSECURE_LOCAL=false
 TEAMS_LOG_LEVEL=info
 ```
@@ -234,7 +234,7 @@ sudo apt update && sudo apt -y install caddy
 	# 后端只信任来自本机的 X-Forwarded-For；Caddy 默认会覆盖客户端伪造的该头
 }
 
-teams.ruanyoutech.com {
+teams.lovekaifa.com {
 	encode zstd gzip
 
 	header {
@@ -315,7 +315,7 @@ sudo ln -sfn /opt/teams/releases/$VERSION /opt/teams/current
 sudo systemctl restart teams
 sudo journalctl -u teams -n 50 --no-pager           # 看到 "listening" 且无错误
 curl -fsS http://127.0.0.1:8090/api/v1/healthz      # {"status":"ok"}
-curl -fsS https://teams.ruanyoutech.com/api/v1/healthz
+curl -fsS https://teams.lovekaifa.com/api/v1/healthz
 ```
 回滚：`sudo ln -sfn /opt/teams/releases/<旧版本> /opt/teams/current && sudo systemctl restart teams`（若新版本包含数据库迁移，回滚二进制前要先用发布前的备份恢复数据库）。保留最近 5 个版本目录。
 
@@ -392,13 +392,13 @@ sudo -u postgres dropdb teams_restore_test
 ### B.11 上线检查清单
 
 - [ ] ICP 备案已通过，域名已绑定该 ECS；计划 30 天内完成公安备案、页脚展示备案号。
-- [ ] DNS `teams.ruanyoutech.com A 123.57.134.175` 生效。
+- [ ] DNS `teams.lovekaifa.com A 123.57.134.175` 生效。
 - [ ] 安全组：80/443 对外；22 仅运维 IP；**5432、8090 未开放**。`ufw status` 一致。
 - [ ] `ss -ltnp`：8090 与 5432 只在 127.0.0.1 / ::1 上监听；对外只有 Caddy 的 80/443。
 - [ ] 从外网 `curl -m 5 http://123.57.134.175:8090/` 与 `:5432` 连接失败。
-- [ ] `/etc/teams/teams.env` 权限 600；`TEAMS_ENV=production`、`TEAMS_WEBHOOK_ALLOW_INSECURE_LOCAL=false`、`TEAMS_CORS_ORIGINS=https://teams.ruanyoutech.com`、`TEAMS_PUBLIC_BASE_URL=https://teams.ruanyoutech.com`。
+- [ ] `/etc/teams/teams.env` 权限 600；`TEAMS_ENV=production`、`TEAMS_WEBHOOK_ALLOW_INSECURE_LOCAL=false`、`TEAMS_CORS_ORIGINS=https://teams.lovekaifa.com`、`TEAMS_PUBLIC_BASE_URL=https://teams.lovekaifa.com`。
 - [ ] `TEAMS_SECRET_KEY`、数据库口令为现场随机生成并已离线保存；仓库中 `git grep` 不到任何真实密钥。
-- [ ] `https://teams.ruanyoutech.com/api/v1/healthz` 返回 ok，证书有效；`http://` 自动跳转 https。
+- [ ] `https://teams.lovekaifa.com/api/v1/healthz` 返回 ok，证书有效；`http://` 自动跳转 https。
 - [ ] 浏览器：注册/登录、建 team、发消息、上传图片和视频（接近 100MB）、WebSocket 实时收到消息、刷新 `/invite/<code>` 页面不 404。
 - [ ] 配置一个测试 bot，webhook 指向 Grok Bot 的 HTTPS 地址，`POST /bots/{id}/webhook/test` 返回 ok；@bot 后频道出现 `bot.run.*` 状态与回复。
 - [ ] 备份 timer 已启用，手动跑一次 `teams-backup.sh`，OSS 中可见文件；做一次恢复演练。

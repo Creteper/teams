@@ -9,7 +9,7 @@
 |---|---|
 | 本地地址 | `http://127.0.0.1:8090`（后端只监听回环） |
 | REST 前缀 | `/api/v1` |
-| WebSocket | `ws://127.0.0.1:8090/api/v1/ws`（生产 `wss://teams.ruanyoutech.com/api/v1/ws`） |
+| WebSocket | `ws://127.0.0.1:8090/api/v1/ws`（生产 `wss://teams.lovekaifa.com/api/v1/ws`） |
 | 编码 | 请求/响应 `application/json; charset=utf-8`；上传用 `multipart/form-data` |
 | ID | UUID v7 字符串（时间有序） |
 | 时间 | RFC 3339 UTC，毫秒精度，如 `2026-11-14T14:38:00.123Z` |
