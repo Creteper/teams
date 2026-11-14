@@ -1,3 +1,4 @@
+import { PUSH_OWNER_KEY } from "../lib/push";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { api, realtime } from "../api";
 import type { LoginInput, RegisterInput, User } from "../api/types";
@@ -111,6 +112,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       async logout() {
         if (token) await api.logout(token).catch(() => undefined);
         localStorage.removeItem(STORAGE_KEY);
+        // 退出登录时服务端会删掉该会话的推送订阅（§9.4），本地“已开启”记录也清掉
+        localStorage.removeItem(PUSH_OWNER_KEY);
         setUser(null);
         setToken(null);
       },

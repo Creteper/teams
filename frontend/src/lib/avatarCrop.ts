@@ -91,3 +91,33 @@ export function outputType(srcType: string): "image/png" | "image/jpeg" {
 export function outputSize(srcRectSize: number): number {
   return Math.max(64, Math.min(AVATAR_OUTPUT_SIZE, Math.round(srcRectSize)));
 }
+
+/** 服务端上限：宽、高各 ≤ 4096，超过直接拒绝（400 field=avatar，§10.1） */
+export const AVATAR_MAX_DIM = 4096;
+
+/** GIF 逻辑屏幕尺寸：文件头第 6–9 字节（小端），不用解码整张图 */
+export function gifSize(b: Uint8Array): { width: number; height: number } | null {
+  if (b.length < 10 || sniffImage(b) !== "image/gif") return null;
+  return { width: b[6] | (b[7] << 8), height: b[8] | (b[9] << 8) };
+}
+
+/** 原图直传（GIF）前的尺寸检查 */
+export function avatarDimError(width: number, height: number): string | null {
+  if (width > AVATAR_MAX_DIM || height > AVATAR_MAX_DIM)
+    return `图片尺寸不能超过 ${AVATAR_MAX_DIM}×${AVATAR_MAX_DIM}（当前 ${width}×${height}）`;
+  return null;
+}
+
+/** PUT /me/avatar 失败 → 中文提示（§1、§10.1 的错误码） */
+export function avatarUploadErrorText(e: unknown): string {
+  const err = e as { status?: number; code?: string; message?: string; details?: Record<string, unknown> } | null;
+  if (err && typeof err.status === "number") {
+    if (err.status === 413) return "图片不能超过 5 MB";
+    if (err.status === 415) return "只支持 jpg、png、gif、webp 格式的图片（文件可能已损坏）";
+    if (err.status === 400 && err.details?.field === "avatar")
+      return /4096/.test(err.message ?? "") ? `图片尺寸不能超过 ${AVATAR_MAX_DIM}×${AVATAR_MAX_DIM}` : `图片无效：${err.message ?? "请换一张"}`;
+    if (err.status === 0) return "网络异常，请稍后再试";
+    return err.message ?? "上传失败";
+  }
+  return e instanceof Error ? e.message : String(e);
+}

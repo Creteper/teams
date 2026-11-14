@@ -2,34 +2,43 @@ import { ApiError } from "../api/errors";
 import type { Channel } from "../api/types";
 import { charCount } from "./text";
 
-/** 频道菜单项 id。置顶（pin）先留位置：后端还没有接口，PIN_ENABLED=false 时不显示 */
-export type ChannelAction = "rename" | "delete" | "pin";
-export const PIN_ENABLED = false;
+/** 频道菜单项 id。置顶 / 取消置顶按用户记录（§5.7 PUT/DELETE /channels/{id}/pin），所有用户成员都能用 */
+export type ChannelAction = "pin" | "unpin" | "rename" | "delete";
+export const PIN_ENABLED = true;
 
 /**
  * docs/api.md §5.1：
  * - 改名 PATCH /channels/{id}：owner/admin/创建者
  * - 删除 DELETE /channels/{id}：owner/admin；默认频道不能删（403）
+ * - 置顶 PUT/DELETE /channels/{id}/pin：用户会话（任何成员，bot 403）；pinned 为本人当前状态
  * 没有任何项时调用方不显示菜单。
  */
-export function channelActions(myRole: string | null | undefined, myMemberId: string, channel: Channel): ChannelAction[] {
+export function channelActions(myRole: string | null | undefined, myMemberId: string, channel: Channel, pinned = !!channel.pinned): ChannelAction[] {
   const manager = myRole === "owner" || myRole === "admin";
   const out: ChannelAction[] = [];
+  if (PIN_ENABLED && myRole && myRole !== "bot") out.push(pinned ? "unpin" : "pin");
   if (manager || (!!myMemberId && channel.created_by_member_id === myMemberId)) out.push("rename");
-  if (PIN_ENABLED) out.push("pin");
   if (manager && !channel.is_default) out.push("delete");
   return out;
 }
 
-export const CHANNEL_ACTION_TEXT: Record<ChannelAction, string> = { rename: "改名", delete: "删除频道", pin: "置顶" };
+export const CHANNEL_ACTION_TEXT: Record<ChannelAction, string> = { pin: "置顶", unpin: "取消置顶", rename: "改名", delete: "删除频道" };
 
 export const CHANNEL_NAME_MAX = 64;
 
-/** 频道名：去首尾空白后 1–64 字符；同 team 不区分大小写唯一（本地先查一遍，服务端 409 兜底） */
+/** 控制字符（换行、制表符等）：后端唯一禁止的字符类别（§5.1 名称规则） */
+// eslint-disable-next-line no-control-regex
+const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/;
+
+/**
+ * 频道名（§5.1）：去首尾空白后 1–64 个 Unicode 字符；只禁止控制字符；同 team 不区分大小写唯一（本地先查一遍，服务端 409 兜底）。
+ * 不比后端更严：中文、空格、#、emoji、标点都允许。
+ */
 export function channelNameError(name: string, channels: Channel[], selfId?: string): string | null {
   const n = name.trim();
   const len = charCount(n);
   if (len < 1) return "频道名不能为空";
+  if (CONTROL_RE.test(n)) return "频道名不能包含换行、制表符等控制字符";
   if (len > CHANNEL_NAME_MAX) return `频道名不能超过 ${CHANNEL_NAME_MAX} 个字`;
   if (channels.some((c) => c.id !== selfId && c.name.toLowerCase() === n.toLowerCase())) return "已有同名频道";
   return null;

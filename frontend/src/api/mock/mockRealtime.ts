@@ -29,6 +29,7 @@ export function createMockRealtime(db: MockDb, opts: { botReplyMs?: number; push
       team_id: channel.team_id,
       channel_id: channelId,
       sender: senderOf(bot),
+      kind: "message",
       content,
       mentions: mentionIds
         .map((id) => db.members.find((m) => m.id === id && m.team_id === channel.team_id))
@@ -49,7 +50,8 @@ export function createMockRealtime(db: MockDb, opts: { botReplyMs?: number; push
   /** 模拟后端 bot.run.* 生命周期：started → delivered → (回复) → completed；没配 webhook 的 bot 直接 failed(no_webhook) */
   function runEvent(base: Omit<BotRunEvent, "at">, status: BotRunStatus, extra: Partial<BotRunEvent> = {}) {
     const now = new Date().toISOString();
-    const data: BotRunEvent = { ...base, ...extra, at: now };
+    const { reply_message_id: replyForItem, ...eventExtra } = extra;
+    const data: BotRunEvent = { ...base, ...eventExtra, ...(status === "completed" ? { reply_message_id: replyForItem } : {}), at: now };
     const prev = db.botRuns.find((r) => r.delivery_id === base.delivery_id);
     const item: BotRunItem = {
       ...base,
@@ -63,6 +65,33 @@ export function createMockRealtime(db: MockDb, opts: { botReplyMs?: number; push
     };
     db.botRuns = [...db.botRuns.filter((r) => r.delivery_id !== base.delivery_id), item];
     emit(db, { type: `bot.run.${status}`, team_id: base.team_id, data } as ServerFrame);
+  }
+
+  /** §7.7 bot 声明不回复：插入 kind=bot_declined 提示消息（reply_to=触发消息），推 message.created + bot.run.declined */
+  function botDecline(base: Omit<BotRunEvent, "at">, trigger: Message, reason: string) {
+    const bot = db.members.find((m) => m.id === base.bot_member_id);
+    const channel = db.channels.get(trigger.channel_id);
+    if (!bot || !channel) return;
+    const notice: Message = {
+      id: nextId(db),
+      seq: nextSeq(db),
+      kind: "bot_declined",
+      team_id: channel.team_id,
+      channel_id: channel.id,
+      sender: senderOf(bot),
+      content: reason,
+      mentions: [],
+      attachments: [],
+      reply_to: trigger.id,
+      trigger_depth: 0,
+      created_at: new Date().toISOString(),
+      edited_at: null,
+      deleted: false,
+    };
+    db.messages.push(notice);
+    channel.last_message_seq = notice.seq;
+    emit(db, { type: "message.created", team_id: channel.team_id, data: notice });
+    runEvent(base, "declined", { decline_message_id: notice.id, reason: reason || null, reply_message_id: notice.id });
   }
 
   function onFrame(frame: ServerFrame, audience?: Audience) {
@@ -87,6 +116,11 @@ export function createMockRealtime(db: MockDb, opts: { botReplyMs?: number; push
       }
       setTimeout(() => runEvent(base, "started"), botReplyMs > 0 ? 300 : 0);
       setTimeout(() => runEvent(base, "delivered"), botReplyMs > 0 ? 900 : 0);
+      // mock：正文带 [decline] 或“不用回”时 bot 声明不回复（演示 bot_declined 与 BotRunBar 的 declined 状态）
+      if (/\[decline\]|不用回/.test(msg.content)) {
+        setTimeout(() => botDecline(base, msg, "这个问题不在我的服务范围内"), botReplyMs);
+        continue;
+      }
       setTimeout(() => {
         const text = msg.content.replace(/<@[^>]+>/g, "").replace(/\s+/g, " ").trim();
         botSay(

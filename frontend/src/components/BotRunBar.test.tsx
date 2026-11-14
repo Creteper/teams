@@ -24,3 +24,18 @@ describe("BotRunBar 按角色显示失败原因", () => {
     expect(container.textContent).not.toMatch(/webhook|no_webhook/);
   });
 });
+
+describe("BotRunBar：bot 声明不回复", () => {
+  afterEach(cleanup);
+  it("显示「选择不回复：理由」并可关闭", () => {
+    const declined = botRunsReducer({}, {
+      type: "event",
+      event: "declined",
+      data: { team_id: "t", channel_id: "c", bot_member_id: "b", trigger_message_id: "m", delivery_id: "d", at: "", reason: "不在服务范围", decline_message_id: "x" },
+      now: 0,
+    }).d;
+    render(<BotRunBar runs={[declined]} members={members} showTechnicalReason={false} onDismiss={() => {}} />);
+    expect(screen.getByText("DeployBot 选择不回复：不在服务范围")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /关闭/ })).toBeTruthy();
+  });
+});

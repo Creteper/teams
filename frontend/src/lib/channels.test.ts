@@ -8,19 +8,20 @@ const ch = (id: string, name: string, by = "x", is_default = false) =>
 const general = ch("g", "general", "o", true);
 const dev = ch("d", "dev", "m");
 
-describe("频道菜单权限（§5.1）", () => {
-  it("owner/admin：改名 + 删除；默认频道只有改名", () => {
-    expect(channelActions("owner", "o", dev)).toEqual(["rename", "delete"]);
-    expect(channelActions("admin", "a", dev)).toEqual(["rename", "delete"]);
-    expect(channelActions("owner", "o", general)).toEqual(["rename"]);
+describe("频道菜单权限（§5.1 / §5.7）", () => {
+  it("owner/admin：置顶 + 改名 + 删除；默认频道没有删除", () => {
+    expect(channelActions("owner", "o", dev)).toEqual(["pin", "rename", "delete"]);
+    expect(channelActions("admin", "a", dev)).toEqual(["pin", "rename", "delete"]);
+    expect(channelActions("owner", "o", general)).toEqual(["pin", "rename"]);
   });
-  it("普通成员：自己创建的频道只能改名，别人的什么都没有（不显示菜单）", () => {
-    expect(channelActions("member", "m", dev)).toEqual(["rename"]);
-    expect(channelActions("member", "z", dev)).toEqual([]);
-    expect(channelActions("member", "z", general)).toEqual([]);
+  it("普通成员：所有频道都能置顶；自己创建的频道才能改名", () => {
+    expect(channelActions("member", "m", dev)).toEqual(["pin", "rename"]);
+    expect(channelActions("member", "z", dev)).toEqual(["pin"]);
+    expect(channelActions("member", "z", general)).toEqual(["pin"]);
   });
-  it("置顶未开放，不出现", () => {
-    expect(channelActions("owner", "o", dev)).not.toContain("pin");
+  it("已置顶 → 取消置顶（看参数或 channel.pinned）", () => {
+    expect(channelActions("member", "z", dev, true)).toEqual(["unpin"]);
+    expect(channelActions("member", "z", { ...dev, pinned: true })).toEqual(["unpin"]);
   });
 });
 
@@ -31,6 +32,10 @@ describe("频道名校验 / 默认频道 / 错误提示", () => {
     expect(channelNameError("字".repeat(64), [])).toBeNull();
     expect(channelNameError("DEV", [general, dev])).toBe("已有同名频道");
     expect(channelNameError("dev", [general, dev], "d")).toBeNull();
+  });
+  it("只禁止控制字符（与后端 unicode.IsControl 一致），其它字符不比后端严", () => {
+    for (const ok of ["#发布 🚀", "a/b\\c", "<script>", "前端 · 讨论", "😀".repeat(64)]) expect(channelNameError(ok, [])).toBeNull();
+    for (const bad of ["a\nb", "a\tb", "a\u0000b", "a\u007fb", "a\u0085b"]) expect(channelNameError(bad, [])).toBe("频道名不能包含换行、制表符等控制字符");
   });
   it("默认频道优先 is_default", () => {
     expect(defaultChannel([dev, ch("g2", "lobby", "o", true)])?.id).toBe("g2");

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Attachment, Channel, Member, Message, MessageSender } from "../api/types";
 import { parseContent } from "../lib/mention";
-import { formatTime, groupMessages } from "../lib/messages";
+import { attachDeclines, formatTime, groupMessages, isDeclined } from "../lib/messages";
 import type { OutboxItem } from "../lib/outbox";
 import { BotBadge, MemberAvatar } from "./MemberAvatar";
 import { useStickToBottom } from "./useStickToBottom";
@@ -16,10 +16,14 @@ interface Row {
   mentionIds: string[];
   mentionNames: Map<string, string>;
   outbox?: OutboxItem;
+  declined?: boolean;
+  reply_to?: string | null;
 }
 
 function toRow(m: Message): Row {
   return {
+    declined: isDeclined(m),
+    reply_to: m.reply_to,
     key: m.id,
     sender: m.sender,
     created_at: m.created_at,
@@ -49,6 +53,8 @@ export function MessageList({
   onMediaRetry,
   onRetrySend,
   onDiscard,
+  highlightId,
+  goneAttachmentIds,
 }: {
   messages: Message[];
   outbox?: OutboxItem[];
@@ -65,13 +71,19 @@ export function MessageList({
   onMediaRetry?(attachmentId: string): void;
   onRetrySend?(localId: string): void;
   onDiscard?(localId: string): void;
+  /** ?msg= 定位：滚到这条消息并高亮几秒 */
+  highlightId?: string | null;
+  /** 已确认不可访问的附件（如所在频道已删除，§5.1）：显示“附件已不可用”，不再重试 */
+  goneAttachmentIds?: ReadonlySet<string>;
 }) {
   // 贴底：内容变高或可视区变矮（状态条、上传卡片）时，原本在底部就跟到底
   const { scrollRef, contentRef, atBottomRef: stickRef, onScroll: trackScroll, stickIfNeeded: stick, scrollToBottom } =
     useStickToBottom();
   const [preview, setPreview] = useState<Attachment | null>(null);
   const byId = useMemo(() => new Map(members.map((m) => [m.id, m])), [members]);
-  const groups = useMemo(() => groupMessages(messages), [messages]);
+  // bot 声明不回复的提示挂到触发消息下面（§7.7）
+  const { main, byTrigger } = useMemo(() => attachDeclines(messages), [messages]);
+  const groups = useMemo(() => groupMessages(main), [main]);
 
   // 头部插入更早消息时保持滚动位置
   const firstId = messages[0]?.id;
@@ -91,11 +103,54 @@ export function MessageList({
   }, [messages.length, outbox.length, stick]);
   // 进入频道 / 首屏加载完成：无条件到底
   useEffect(() => {
-    if (!initialLoading) scrollToBottom();
-  }, [initialLoading, channel.id, scrollToBottom]);
+    if (!initialLoading && !highlightId) scrollToBottom();
+  }, [initialLoading, channel.id, scrollToBottom, highlightId]);
+
+  // ?msg= 定位：滚到目标消息（居中）并高亮约 4 秒
+  const [flashId, setFlashId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!highlightId || initialLoading) return;
+    const el = scrollRef.current?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(highlightId)}"]`);
+    if (!el) return;
+    stickRef.current = false;
+    el.scrollIntoView({ block: "center" });
+    setFlashId(highlightId);
+    const t = setTimeout(() => setFlashId((f) => (f === highlightId ? null : f)), 4000);
+    return () => clearTimeout(t);
+  }, [highlightId, initialLoading, messages.length, scrollRef, stickRef]);
+
+  function renderDecline(d: Message, standalone: boolean): ReactNode {
+    const name = byId.get(d.sender.member_id)?.display_name || d.sender.display_name || "Bot";
+    return (
+      <div
+        key={d.id}
+        data-message-id={d.id}
+        data-kind="bot_declined"
+        className={`flex items-center gap-1.5 text-[13px] italic text-[#949ba4] ${standalone ? "mt-2 px-4 pl-[72px]" : "mt-0.5"} ${
+          flashId === d.id ? "teams-flash" : ""
+        }`}
+      >
+        <span aria-hidden="true" className="not-italic">
+          {standalone ? "⊘" : "↳ ⊘"}
+        </span>
+        <span>
+          <span className="font-medium not-italic text-[#b5bac1]">{name}</span> 选择不回复
+          {d.content ? <span className="text-[#80848e]">：{d.content}</span> : null}
+          {standalone && d.reply_to ? <span className="text-[#6d6f78]">（回复的是更早的消息）</span> : null}
+        </span>
+        <time className="ml-1 text-[11px] not-italic text-[#6d6f78]" dateTime={d.created_at}>
+          {formatTime(d.created_at)}
+        </time>
+      </div>
+    );
+  }
 
   function renderGroup(rows: Row[]): ReactNode {
     const first = rows[0];
+    if (first.declined) {
+      const d = messages.find((m) => m.id === first.key);
+      return d ? renderDecline(d, true) : null;
+    }
     // 头像/名字优先用成员表（更新更及时），查不到再用消息里的 sender
     const sender = byId.get(first.sender.member_id) ?? first.sender;
     const name = sender.display_name || "未知成员";
@@ -107,8 +162,10 @@ export function MessageList({
           return (
             <div
               key={row.key}
+              data-message-id={ob ? undefined : row.key}
+              data-highlighted={flashId === row.key ? "true" : undefined}
               data-mentions-me={mentionsMe || undefined}
-              className={`group/row relative flex gap-4 px-4 py-0.5 transition-colors ${
+              className={`group/row relative flex gap-4 px-4 py-0.5 transition-colors ${flashId === row.key ? "teams-flash" : ""} ${
                 mentionsMe
                   ? "bg-[#f0b232]/[0.08] hover:bg-[#f0b232]/[0.13] before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:bg-[#f0b232]"
                   : "hover:bg-[#2e3035]"
@@ -158,6 +215,7 @@ export function MessageList({
                       <AttachmentView
                         key={`${a.id}|${a.url}`}
                         attachment={a}
+                        gone={!!goneAttachmentIds?.has(a.id)}
                         onPreview={setPreview}
                         onMediaLoad={stick}
                         onFirstError={() => onMediaError?.(a.id)}
@@ -182,6 +240,7 @@ export function MessageList({
                     </p>
                   )
                 ) : null}
+                {byTrigger.get(row.key)?.map((d) => renderDecline(d, false))}
               </div>
             </div>
           );
@@ -290,12 +349,14 @@ function mediaBox(a: Attachment): { width: number; height: number } {
 
 function AttachmentView({
   attachment: a,
+  gone = false,
   onPreview,
   onMediaLoad,
   onFirstError,
   onRetry,
 }: {
   attachment: Attachment;
+  gone?: boolean;
   onPreview(a: Attachment): void;
   onMediaLoad(): void;
   onFirstError(): void;
@@ -307,6 +368,23 @@ function AttachmentView({
     setFailed(true);
     onFirstError();
   };
+  if (gone) {
+    return (
+      <div
+        style={mediaBox(a)}
+        className="flex min-h-[100px] min-w-[220px] flex-col items-center justify-center gap-1 rounded-lg border border-dashed border-white/10 bg-[#2b2d31] text-sm text-[#949ba4]"
+        role="group"
+        aria-label={`${a.file_name} 已不可用`}
+        data-testid="attachment-gone"
+      >
+        <span className="text-xl" aria-hidden="true">
+          🚫
+        </span>
+        <span>附件已不可用</span>
+        <span className="text-xs text-[#6d6f78]">所在消息或频道可能已被删除</span>
+      </div>
+    );
+  }
   if (failed) {
     return (
       <div

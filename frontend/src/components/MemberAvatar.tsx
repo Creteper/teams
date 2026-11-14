@@ -22,19 +22,16 @@ export function MemberAvatar({ member, size = 40 }: { member: AvatarSource & { m
   const mode = avatarMode(member);
   if (mode === "procedural") {
     // 程序化 bot 头像（shape/color 由 BotAvatar 内部 trim + 忽略大小写解析，未知值回退默认）。
-    // 深色界面：colorScheme="dark"（黑色身体画成白色），外加浅色底 + 细描边，保证深色头像也看得清
-    const inner = Math.round(size * 0.84);
+    // 深色界面：colorScheme="dark"（黑色身体画成白色）。不加外圈底色 / 描边 / ring，直接显示形状本身；
+    // 外层只占位（保持与用户头像同样的尺寸和对齐）。
     return (
-      <span
-        className="inline-flex shrink-0 items-center justify-center rounded-full bg-white/[0.07] ring-1 ring-white/20"
-        style={{ width: size, height: size }}
-      >
+      <span className="inline-flex shrink-0 items-center justify-center" style={{ width: size, height: size }} data-avatar="bot">
         <BotAvatar
           shape={member.avatar_shape ?? ""}
           color={member.avatar_color ?? ""}
           seed={member.member_id ?? member.id}
           colorScheme="dark"
-          size={inner}
+          size={size}
           title={member.display_name}
         />
       </span>
@@ -42,7 +39,8 @@ export function MemberAvatar({ member, size = 40 }: { member: AvatarSource & { m
   }
   return (
     <Avatar className="shrink-0" style={{ width: size, height: size }}>
-      {mode === "image" ? <Avatar.Image src={member.avatar_url!} alt={member.display_name} /> : null}
+      {/* object-fit: cover 居中裁成方形：非正方形图片（尤其是原样上传的 GIF 动图）不拉伸，动画照常播放 */}
+      {mode === "image" ? <Avatar.Image src={member.avatar_url!} alt={member.display_name} className="object-cover object-center" /> : null}
       <Avatar.Fallback
         className="font-semibold text-white"
         style={{ backgroundColor: colorOf(member.display_name), fontSize: Math.max(11, Math.round(size * 0.38)) }}

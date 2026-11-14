@@ -44,7 +44,8 @@ describe("mock api（数据形状同 docs/api.md）", () => {
     expect(msg.seq).toBe(before + 1);
     expect(msg.mentions).toEqual([{ member_id: IDS.mHelper, type: "bot", display_name: "Grok" }]);
     expect(msg.sender.member_id).toBe(IDS.mAlice);
-    expect(frames.at(-1)).toMatchObject({ type: "message.created", team_id: IDS.tDev });
+    expect(frames.find((f) => f.type === "message.created")).toMatchObject({ type: "message.created", team_id: IDS.tDev });
+    expect(frames.at(-1)).toMatchObject({ type: "channel.read" });
   });
 
   it("空消息报 validation_failed，错误结构带 code", async () => {
@@ -411,12 +412,15 @@ describe("mock：频道改名 / 删除（§5.1）", () => {
 });
 
 describe("mock：bot 资料 / 我的头像", () => {
-  it("普通成员可读 bot 描述，webhook 为 null", async () => {
+  it("GET /teams/{tid}/members/{mid}：bot 带 description，用户为 null；不是本 team → 404", async () => {
     const { api } = setup();
     const carol = (await api.login({ username: "carol", password: "x" })).token;
-    const bot = await api.getBot(carol, IDS.bHelper);
-    expect(bot).toMatchObject({ member_id: IDS.mHelper, name: "grok", webhook: null });
+    const bot = await api.getMember(carol, IDS.tDev, IDS.mHelper);
+    expect(bot).toMatchObject({ id: IDS.mHelper, type: "bot", role: "bot" });
     expect(bot.description).toContain("AI 助手");
+    expect((await api.getMember(carol, IDS.tDev, IDS.mAlice)).description).toBeNull();
+    expect((await api.listMembers(carol, IDS.tDev)).items.every((m) => (m.type === "bot" ? typeof m.description === "string" : m.description === null))).toBe(true);
+    await expect(api.getMember(carol, IDS.tDev, IDS.mBobDesign)).rejects.toMatchObject({ status: 404 });
   });
   it("PUT /me/avatar：嗅探类型、≤5MB；成功推 member.updated；DELETE 清空", async () => {
     const { db, api } = setup();
@@ -435,5 +439,128 @@ describe("mock：bot 资料 / 我的头像", () => {
     await expect(api.uploadMyAvatar(token, big, "x.png")).rejects.toMatchObject({ status: 413 });
     expect((await api.deleteMyAvatar(token)).avatar_url).toBeNull();
     expect((await api.listMembers(token, IDS.tDev)).items.find((m) => m.user_id === user.id)?.avatar_url).toBeNull();
+    // 再删一次：仍 200，但不推送
+    const before = frames.length;
+    expect((await api.deleteMyAvatar(token)).avatar_url).toBeNull();
+    expect(frames.length).toBe(before);
+  });
+  it("GIF 头像原样保存（不转码）；宽或高 > 4096 → 400 field=avatar", async () => {
+    const { api } = setup();
+    const { token } = await api.login({ username: "alice", password: "x" });
+    const gif = (w: number, h: number) =>
+      new Blob([new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, w & 255, w >> 8, h & 255, h >> 8, 0, 0, 0, 0x3b])], { type: "image/gif" });
+    expect((await api.uploadMyAvatar(token, gif(200, 120), "a.gif")).avatar_url).toMatch(/^data:image\/gif;base64,R0lGODlh/);
+    await expect(api.uploadMyAvatar(token, gif(4097, 10), "big.gif")).rejects.toMatchObject({ status: 400, details: { field: "avatar" } });
+  });
+});
+
+describe("mock：未读与置顶（§5.7）", () => {
+  it("频道列表带本人状态；自己发的、bot_declined 不算未读；@ 我 → has_unread_mention", async () => {
+    const { api } = setup();
+    const carol = (await api.login({ username: "carol", password: "x" })).token;
+    const chans = (await api.listChannels(carol, IDS.tDev)).items;
+    const by = (id: string) => chans.find((c) => c.id === id)!;
+    expect(chans[0].is_default).toBe(true);
+    expect(by(IDS.cGeneral)).toMatchObject({ unread_count: 0, has_unread_mention: false, pinned: false, pinned_at: null });
+    expect(by(IDS.cFrontend)).toMatchObject({ unread_count: 2, has_unread_mention: false });
+    expect(by(IDS.cRandom)).toMatchObject({ unread_count: 1, has_unread_mention: true });
+    // Bob 的 general：Alice @Planner 那条算未读，Planner 的不回复提示不算
+    const bob = (await api.login({ username: "bob", password: "x" })).token;
+    expect((await api.getChannel(bob, IDS.cGeneral)).unread_count).toBe(1);
+  });
+  it("POST /read：只前进不后退；省略 seq = 最新；变化才推 channel.read（仅本人）", async () => {
+    const { db, api } = setup();
+    const got: { f: ServerFrame; only?: string }[] = [];
+    db.listeners.add((f, aud) => got.push({ f, only: aud?.only }));
+    const { token, user } = await api.login({ username: "carol", password: "x" });
+    const ch = await api.getChannel(token, IDS.cFrontend);
+    const first = await api.markChannelRead(token, IDS.cFrontend, ch.last_read_seq! + 1);
+    expect(first).toMatchObject({ unread_count: 1, last_read_seq: ch.last_read_seq! + 1 });
+    const back = await api.markChannelRead(token, IDS.cFrontend, 1);
+    expect(back.last_read_seq).toBe(ch.last_read_seq! + 1);
+    const all = await api.markChannelRead(token, IDS.cFrontend);
+    expect(all).toMatchObject({ unread_count: 0, has_unread_mention: false, last_read_seq: ch.last_message_seq });
+    const reads = got.filter((g) => g.f.type === "channel.read");
+    expect(reads).toHaveLength(2);
+    expect(reads.every((g) => g.only === user.id)).toBe(true);
+    await expect(api.markChannelRead(token, IDS.cFrontend, -1)).rejects.toMatchObject({ status: 400 });
+  });
+  it("PUT/DELETE /pin 幂等，重复置顶保持 pinned_at；变化才推 channel.pinned", async () => {
+    const { db, api } = setup();
+    const frames: ServerFrame[] = [];
+    db.listeners.add((f) => frames.push(f));
+    const { token } = await api.login({ username: "carol", password: "x" });
+    const a = await api.pinChannel(token, IDS.cRandom);
+    expect(a.pinned).toBe(true);
+    const b = await api.pinChannel(token, IDS.cRandom);
+    expect(b.pinned_at).toBe(a.pinned_at);
+    expect((await api.unpinChannel(token, IDS.cRandom)).pinned).toBe(false);
+    expect((await api.unpinChannel(token, IDS.cRandom)).pinned).toBe(false);
+    expect(frames.filter((f) => f.type === "channel.pinned")).toHaveLength(2);
+    // 置顶只影响自己
+    const bob = (await api.login({ username: "bob", password: "x" })).token;
+    await api.pinChannel(token, IDS.cRandom);
+    expect((await api.getChannel(bob, IDS.cRandom)).pinned).toBe(false);
+  });
+  it("GET /me/unread 跨 team；自己发消息自动已读", async () => {
+    const { api } = setup();
+    const { token } = await api.login({ username: "alice", password: "x" });
+    const items = await api.listMyUnread(token);
+    expect(items.some((i) => i.team_id === IDS.tDesign && i.has_unread_mention)).toBe(true);
+    expect(items.every((i) => i.unread_count > 0 || i.has_unread_mention)).toBe(true);
+    await api.sendMessage(token, IDS.cFrontend, { content: "我也来一条", attachment_ids: [] });
+    expect((await api.getChannel(token, IDS.cFrontend)).unread_count).toBe(0);
+  });
+  it("删除频道后其附件进 missing", async () => {
+    const { api } = setup();
+    const { token } = await api.login({ username: "alice", password: "x" });
+    await api.deleteChannel(token, IDS.cRandom);
+    const r = await api.refreshAttachmentUrls(token, [mockUuid(53)]);
+    expect(r.missing).toEqual([mockUuid(53)]);
+  });
+  it("频道名只禁止控制字符：emoji/#/空格可以，换行 400", async () => {
+    const { api } = setup();
+    const { token } = await api.login({ username: "alice", password: "x" });
+    expect((await api.createChannel(token, IDS.tDev, { name: " #发布 🚀 " })).name).toBe("#发布 🚀");
+    await expect(api.createChannel(token, IDS.tDev, { name: "a\nb" })).rejects.toMatchObject({ status: 400, details: { field: "name" } });
+  });
+});
+
+describe("mock：推送订阅（§9.4）", () => {
+  const sub = { endpoint: "https://push.example.com/abc", expirationTime: null, keys: { p256dh: "B" + "A".repeat(86), auth: "A".repeat(22) } };
+  it("vapid 公钥；新建 201 语义 / 重复 upsert；DELETE 总是成功；关闭推送 → 503 push_disabled", async () => {
+    const { db, api } = setup();
+    const { token } = await api.login({ username: "alice", password: "x" });
+    expect(await api.getVapidPublicKey(token)).toMatchObject({ enabled: true });
+    const a = await api.subscribePush(token, sub);
+    const b = await api.subscribePush(token, sub);
+    expect(b.id).toBe(a.id);
+    await expect(api.subscribePush(token, { ...sub, endpoint: "http://x" })).rejects.toMatchObject({ status: 400, details: { field: "endpoint" } });
+    await api.unsubscribePush(token, sub.endpoint);
+    await api.unsubscribePush(token, sub.endpoint);
+    expect(db.pushSubscriptions.size).toBe(0);
+    db.pushEnabled = false;
+    expect(await api.getVapidPublicKey(token)).toEqual({ enabled: false, public_key: null });
+    await expect(api.subscribePush(token, sub)).rejects.toMatchObject({ status: 503, code: "push_disabled" });
+  });
+});
+
+describe("mock：bot 声明不回复（§7.7）", () => {
+  it("正文带 [decline]：插入 bot_declined 提示（reply_to=触发消息）并推 bot.run.declined", async () => {
+    const db = createMockDb();
+    const api = createMockApi(db, { latencyMs: 0 });
+    const rt = createMockRealtime(db, { botReplyMs: 0, pushIntervalMs: 0 });
+    const frames: ServerFrame[] = [];
+    rt.subscribe((f) => frames.push(f));
+    const { token } = await api.login({ username: "alice", password: "x" });
+    rt.connect(token);
+    const trigger = await api.sendMessage(token, IDS.cGeneral, { content: `<@${IDS.mHelper}> [decline] 帮我订票`, attachment_ids: [] });
+    await new Promise((r) => setTimeout(r, 20));
+    const notice = frames.find((f) => f.type === "message.created" && f.data.kind === "bot_declined");
+    expect(notice && notice.type === "message.created" && notice.data).toMatchObject({ reply_to: trigger.id, mentions: [], trigger_depth: 0, content: "这个问题不在我的服务范围内" });
+    const declined = frames.find((f) => f.type === "bot.run.declined");
+    expect(declined && declined.type === "bot.run.declined" && declined.data).toMatchObject({ trigger_message_id: trigger.id, bot_member_id: IDS.mHelper });
+    expect(frames.some((f) => f.type === "bot.run.completed")).toBe(false);
+    rt.disconnect();
   });
 });

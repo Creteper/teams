@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { avatarFileError, clampCrop, initialCrop, outputSize, outputType, sniffImage, sourceRect, zoomAt, AVATAR_MAX_BYTES } from "./avatarCrop";
+import { avatarDimError, avatarUploadErrorText, gifSize, avatarFileError, clampCrop, initialCrop, outputSize, outputType, sniffImage, sourceRect, zoomAt, AVATAR_MAX_BYTES } from "./avatarCrop";
 
 const bytes = (...b: number[]) => new Uint8Array([...b, ...new Array(16).fill(0)]);
 
@@ -47,5 +47,25 @@ describe("裁剪几何", () => {
     expect(outputSize(4000)).toBe(512);
     expect(outputSize(300)).toBe(300);
     expect(outputSize(10)).toBe(64);
+  });
+});
+
+describe("GIF 原图直传：尺寸与错误提示", () => {
+  const gif = (w: number, h: number) => new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, w & 255, w >> 8, h & 255, h >> 8, 0, 0, 0]);
+  it("从文件头读出逻辑尺寸（小端）；不是 GIF 返回 null", () => {
+    expect(gifSize(gif(320, 4097))).toEqual({ width: 320, height: 4097 });
+    expect(gifSize(new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 0, 0, 0, 0, 0]))).toBeNull();
+    expect(gifSize(gif(1, 1).slice(0, 8))).toBeNull();
+  });
+  it("宽或高超过 4096 前端先拦", () => {
+    expect(avatarDimError(4096, 4096)).toBeNull();
+    expect(avatarDimError(4097, 10)).toBe("图片尺寸不能超过 4096×4096（当前 4097×10）");
+  });
+  it("413 / 415 / 400 field=avatar / 网络 → 中文", () => {
+    expect(avatarUploadErrorText({ status: 413, code: "payload_too_large", message: "x" })).toBe("图片不能超过 5 MB");
+    expect(avatarUploadErrorText({ status: 415, code: "unsupported_media_type", message: "x" })).toContain("只支持 jpg、png、gif、webp");
+    expect(avatarUploadErrorText({ status: 400, message: "图片尺寸不能超过 4096×4096", details: { field: "avatar" } })).toBe("图片尺寸不能超过 4096×4096");
+    expect(avatarUploadErrorText({ status: 400, message: "文件为空", details: { field: "avatar" } })).toBe("图片无效：文件为空");
+    expect(avatarUploadErrorText({ status: 0, message: "x" })).toBe("网络异常，请稍后再试");
   });
 });

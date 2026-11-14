@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { Navigate, useNavigate, useParams } from "react-router";
+import { Navigate, useNavigate, useParams, useSearchParams } from "react-router";
 import { Spinner } from "@heroui/react";
 import { api, fetchAllMembers, realtime } from "../api";
 import type { Channel, Member, Message, Team } from "../api/types";
@@ -13,8 +13,11 @@ import { InviteDialog } from "../components/InviteDialog";
 import { TeamRail } from "../components/TeamRail";
 import { useTeams } from "../hooks";
 import { mergeMessages } from "../lib/messages";
+import { countsAsUnread } from "../lib/unread";
+import { useUnread } from "../useUnread";
+import { ApiError } from "../api/errors";
 import { applyAttachmentUrls, chunk, idsNeedingRefresh } from "../lib/attachments";
-import { botRunsReducer } from "../lib/botRuns";
+import { DECLINED_SHOW_MS, botRunsReducer } from "../lib/botRuns";
 import { newClientMsgId, type OutboxItem } from "../lib/outbox";
 import { BotRunBar } from "../components/BotRunBar";
 import { TeamSettingsDialog } from "../components/TeamSettingsDialog";
@@ -33,6 +36,16 @@ export default function TeamPage() {
   const { user, logout, syncUser } = useAuth();
   const navigate = useNavigate();
   const { teams, reload: reloadTeams } = useTeams(token);
+  const [searchParams] = useSearchParams();
+  /** 通知 / 链接里的 ?msg=<message_id>：定位并高亮（§9.4） */
+  const msgParam = searchParams.get("msg");
+  const [highlightId, setHighlightId] = useState<string | null>(null);
+  /** 已确认不可访问的附件（/attachments/urls 的 missing、单个刷新 404），不再重试 */
+  const [goneAttachments, setGoneAttachments] = useState<Set<string>>(() => new Set());
+  const goneRef = useRef(goneAttachments);
+  goneRef.current = goneAttachments;
+  const unread = useUnread({ token, teams, teamId, viewingChannelId: channelId });
+  const { seed: seedUnread, markRead } = unread;
 
   const [team, setTeam] = useState<Team | null>(null);
   const [channels, setChannels] = useState<Channel[]>([]);
@@ -67,6 +80,7 @@ export default function TeamPage() {
   const [focusComposerFor, setFocusComposerFor] = useState<string | null>(null);
   const [profileMemberId, setProfileMemberId] = useState<string | null>(null);
   const channelsRef = useRef<Channel[]>([]);
+  const myMemberIdRef = useRef("");
   useEffect(() => {
     channelsRef.current = channels;
   }, [channels]);
@@ -90,6 +104,7 @@ export default function TeamPage() {
         if (cancelled) return;
         setTeam(t);
         setChannels(cs.items);
+        seedUnread(teamId, cs.items);
         setMembers(ms);
       })
       .catch((e: unknown) => {
@@ -101,9 +116,24 @@ export default function TeamPage() {
     return () => {
       cancelled = true;
     };
-  }, [token, teamId]);
+  }, [token, teamId, seedUnread]);
 
-  // 当前频道首屏消息
+  // 断线重连：重新拉频道列表（未读数以服务端为准，§5.7“断线重连后重新拉频道列表”）
+  useEffect(
+    () =>
+      realtime.onReady(() => {
+        api
+          .listChannels(token, teamId)
+          .then((cs) => {
+            setChannels(cs.items);
+            seedUnread(teamId, cs.items);
+          })
+          .catch(() => undefined);
+      }),
+    [token, teamId, seedUnread],
+  );
+
+  // 当前频道首屏消息；带 ?msg= 时往前分页直到加载到目标消息（§5.5 before=<seq>），然后高亮
   useEffect(() => {
     if (!channelId) return;
     let cancelled = false;
@@ -111,14 +141,40 @@ export default function TeamPage() {
     setHasMore(false);
     setOlderCursor(null);
     setMessagesLoading(true);
-    api
-      .listMessages(token, channelId, { limit: 50 })
-      .then((page) => {
-        if (cancelled) return;
-        setMessages(page.items);
-        setHasMore(page.has_more);
-        setOlderCursor(page.next_cursor);
-      })
+    setHighlightId(null);
+    (async () => {
+      const page = await api.listMessages(token, channelId, { limit: 50 });
+      let items = page.items;
+      let more = page.has_more;
+      let cursor = page.next_cursor;
+      let found = !msgParam || items.some((m) => m.id === msgParam);
+      if (msgParam && !found) {
+        // 先查单条拿 seq，确认属于本频道，再按 before 往前翻（每页 100，最多 50 页）
+        let targetSeq: number | null = null;
+        try {
+          const target = await api.getMessage(token, msgParam);
+          if (target.channel_id === channelId) targetSeq = target.seq;
+        } catch {
+          targetSeq = null;
+        }
+        for (let i = 0; targetSeq !== null && more && cursor && Number(cursor) > targetSeq && i < 50 && !cancelled; i++) {
+          const older = await api.listMessages(token, channelId, { before: Number(cursor), limit: 100 });
+          items = mergeMessages(items, older.items);
+          more = older.has_more;
+          cursor = older.next_cursor;
+        }
+        found = items.some((m) => m.id === msgParam);
+        if (!found && !cancelled) setChannelNotice("要定位的消息不存在、已被删除，或不在这个频道里");
+      }
+      if (cancelled) return;
+      setMessages(items);
+      setHasMore(more);
+      setOlderCursor(cursor);
+      if (msgParam && found) setHighlightId(msgParam);
+      // 打开频道即标已读：带上已加载到的最大 seq（只前进不后退）
+      const top = items.reduce((mx, m) => Math.max(mx, m.seq), 0);
+      void markRead(channelId, top || undefined);
+    })()
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       })
@@ -133,7 +189,7 @@ export default function TeamPage() {
     return () => {
       cancelled = true;
     };
-  }, [token, channelId]);
+  }, [token, channelId, msgParam, markRead]);
 
   // 向上滚动加载更早消息：before = 上一页 next_cursor（本页最小 seq）
   const loadOlder = useCallback(async () => {
@@ -154,11 +210,13 @@ export default function TeamPage() {
   // 签名 URL 快到期时批量刷新（每分钟检查，提前 5 分钟，单批 ≤100）
   useEffect(() => {
     const timer = setInterval(async () => {
-      const ids = idsNeedingRefresh(messagesRef.current, Date.now());
+      const ids = idsNeedingRefresh(messagesRef.current, Date.now(), undefined, goneRef.current);
       for (const batch of chunk(ids, 100)) {
         try {
-          const { items } = await api.refreshAttachmentUrls(token, batch);
+          const { items, missing } = await api.refreshAttachmentUrls(token, batch);
           setMessages((prev) => applyAttachmentUrls(prev, items));
+          // missing：不可见或已不存在（例如所在频道已删除，§5.1）→ 显示“附件已不可用”，以后不再刷新
+          if (missing.length) setGoneAttachments((prev) => new Set([...prev, ...missing]));
         } catch {
           /* 下次再试 */
         }
@@ -175,8 +233,8 @@ export default function TeamPage() {
       try {
         const u = await api.getAttachment(token, attachmentId);
         setMessages((prev) => applyAttachmentUrls(prev, [u]));
-      } catch {
-        /* 放弃 */
+      } catch (e) {
+        if (e instanceof ApiError && e.status === 404) setGoneAttachments((prev) => new Set([...prev, attachmentId]));
       }
     },
     [token],
@@ -204,8 +262,12 @@ export default function TeamPage() {
       if (frame.team_id && frame.team_id !== teamId) return;
       switch (frame.type) {
         case "message.created":
-          dispatchRuns({ type: "message", message: frame.data });
-          if (frame.data.channel_id === channelId) setMessages((prev) => mergeMessages(prev, [frame.data]));
+          dispatchRuns({ type: "message", message: frame.data, now: Date.now() });
+          if (frame.data.channel_id === channelId) {
+            setMessages((prev) => mergeMessages(prev, [frame.data]));
+            // 正在看的频道来了算未读的新消息：推进已读（自己发的由服务端推进，bot_declined 不计）
+            if (countsAsUnread(frame.data, myMemberIdRef.current)) void markRead(channelId, frame.data.seq);
+          }
           break;
         case "message.updated":
           if (frame.data.channel_id === channelId) setMessages((prev) => mergeMessages(prev, [frame.data]));
@@ -215,6 +277,7 @@ export default function TeamPage() {
         case "bot.run.retrying":
         case "bot.run.failed":
         case "bot.run.completed":
+        case "bot.run.declined":
           dispatchRuns({
             type: "event",
             event: frame.type.slice("bot.run.".length) as "started",
@@ -241,9 +304,10 @@ export default function TeamPage() {
           break;
         case "channel.created":
         case "channel.updated":
+          // 推送里没有本人状态字段（§5.1），合并时保留原有的 pinned / unread 字段
           setChannels((prev) =>
             prev.some((c) => c.id === frame.data.id)
-              ? prev.map((c) => (c.id === frame.data.id ? frame.data : c))
+              ? prev.map((c) => (c.id === frame.data.id ? { ...c, ...frame.data } : c))
               : [...prev, frame.data],
           );
           break;
@@ -278,13 +342,26 @@ export default function TeamPage() {
           break;
       }
     });
-  }, [teamId, channelId, navigate, user?.id, syncUser]);
+  }, [teamId, channelId, navigate, user?.id, syncUser, markRead]);
 
   // 90 秒兜底：每 5 秒检查一次
   useEffect(() => {
     const t = setInterval(() => dispatchRuns({ type: "tick", now: Date.now() }), 5000);
     return () => clearInterval(t);
   }, []);
+
+  // declined 提示到点准时收起（5 秒一次的 tick 会让它多停留最多 5 秒）
+  const nextDeclineEnd = Math.min(
+    Infinity,
+    ...Object.values(botRuns)
+      .filter((r) => r.phase === "declined")
+      .map((r) => (r.endedAt ?? r.startedAt) + DECLINED_SHOW_MS),
+  );
+  useEffect(() => {
+    if (!Number.isFinite(nextDeclineEnd)) return;
+    const t = setTimeout(() => dispatchRuns({ type: "tick", now: Date.now() }), Math.max(0, nextDeclineEnd - Date.now()) + 50);
+    return () => clearTimeout(t);
+  }, [nextDeclineEnd]);
 
   // 切频道时清掉本地待发送
   useEffect(() => {
@@ -351,6 +428,7 @@ export default function TeamPage() {
   }
   const channel = channels.find((c) => c.id === channelId);
   const myMemberId = team?.my_member_id ?? "";
+  myMemberIdRef.current = myMemberId;
   const canManage = team?.my_role === "owner" || team?.my_role === "admin";
   const me = members.find((m) => m.id === myMemberId);
   const mySender: MessageSender = {
@@ -367,7 +445,7 @@ export default function TeamPage() {
 
   return (
     <div className="flex h-full overflow-hidden bg-[#313338] text-[#dbdee1]">
-      <TeamRail teams={teams} currentTeamId={teamId} onAdd={() => setDialogOpen(true)} />
+      <TeamRail teams={teams} currentTeamId={teamId} onAdd={() => setDialogOpen(true)} unread={unread.summary} />
       <ChannelSidebar
         team={team}
         channels={channels}
@@ -391,8 +469,13 @@ export default function TeamPage() {
         }}
         onEditProfile={() => setProfileOpen(true)}
         myMemberId={myMemberId}
+        unread={unread.map}
         onChannelAction={(c, action) => {
-          if (action === "rename") setRenameTarget(c);
+          if (action === "pin" || action === "unpin") {
+            unread.setPinned(c.id, action === "pin").catch((e: unknown) =>
+              setChannelNotice(`${action === "pin" ? "置顶" : "取消置顶"}失败：${e instanceof Error ? e.message : String(e)}`),
+            );
+          } else if (action === "rename") setRenameTarget(c);
           else if (action === "delete") {
             setDeleteError(null);
             setDeleteTarget(c);
@@ -443,6 +526,8 @@ export default function TeamPage() {
                 if (item) void deliver(item);
               }}
               onDiscard={(localId) => setOutbox((prev) => prev.filter((o) => o.local_id !== localId))}
+              highlightId={highlightId}
+              goneAttachmentIds={goneAttachments}
             />
             {/* bot 状态区：消息列表和输入框之间单独一行，处于正常文档流；出现时列表通过 ResizeObserver 贴底 */}
             <BotRunBar

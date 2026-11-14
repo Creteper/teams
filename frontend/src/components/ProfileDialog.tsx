@@ -1,9 +1,11 @@
 import { useRef, useState } from "react";
 import { Button, Input } from "@heroui/react";
-import { useAuth } from "../auth/AuthContext";
-import { avatarFileError, sniffImage } from "../lib/avatarCrop";
+import { useAuth, useToken } from "../auth/AuthContext";
+import { avatarDimError, avatarFileError, avatarUploadErrorText, gifSize, sniffImage } from "../lib/avatarCrop";
 import { charCount } from "../lib/text";
 import { AvatarCropDialog } from "./AvatarCropDialog";
+import { GifAvatarDialog } from "./GifAvatarDialog";
+import { PushSettings } from "./PushSettings";
 import { Field, FormError } from "./FormField";
 import { MemberAvatar } from "./MemberAvatar";
 import { Counter } from "./TeamSettingsDialog";
@@ -14,11 +16,15 @@ const NAME_MAX = 64;
 /**
  * 编辑个人资料：
  * - 头像：PUT /me/avatar（选图 → 校验类型/大小 → 裁剪成正方形 → 上传）、DELETE /me/avatar（二次确认）；
+ *   GIF 不裁剪不转码，原文件上传以保留动画（先读文件头检查 ≤ 4096×4096），显示时 object-fit: cover 居中裁切；
+ * - 通知：「开启 @ 消息通知」（§9.4，服务器未开启推送时不显示）；
  * - 显示名称：PATCH /me {display_name}（1–64 字）。
  * 成功后后端向所在 team 推 member.updated，其他窗口随之更新。
  */
 export function ProfileDialog({ onClose }: { onClose(): void }) {
   const { user, updateProfile, uploadAvatar, removeAvatar } = useAuth();
+  const token = useToken();
+  const [gif, setGif] = useState<{ file: File; size: { width: number; height: number } } | null>(null);
   const [name, setName] = useState(user?.display_name ?? "");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -53,6 +59,14 @@ export function ProfileDialog({ onClose }: { onClose(): void }) {
     const type = sniffImage(head);
     const bad = avatarFileError(file.size, type);
     if (bad) return setAvatarError(bad);
+    if (type === "image/gif") {
+      // 动图：原文件直传，后端不缩放、超过 4096 直接拒绝，所以先在本地看尺寸
+      const size = gifSize(head);
+      if (!size) return setAvatarError("图片无法读取，可能已损坏，请换一张");
+      const tooBig = avatarDimError(size.width, size.height);
+      if (tooBig) return setAvatarError(tooBig);
+      return setGif({ file, size });
+    }
     setCropping({ file, type: type! });
   }
 
@@ -71,7 +85,7 @@ export function ProfileDialog({ onClose }: { onClose(): void }) {
               </Button>
             ) : null}
           </div>
-          <p className="text-xs text-[#949ba4]">支持 jpg、png、gif、webp，不超过 5 MB；上传前可裁剪成正方形。</p>
+          <p className="text-xs text-[#949ba4]">支持 jpg、png、gif、webp，不超过 5 MB；静态图上传前可裁剪成正方形，GIF 保留动画、居中裁切显示。</p>
           <input
             ref={fileRef}
             type="file"
@@ -87,6 +101,7 @@ export function ProfileDialog({ onClose }: { onClose(): void }) {
           {avatarNotice ? <p className="text-xs text-[#57f287]">{avatarNotice}</p> : null}
         </div>
       </section>
+      {user ? <PushSettings token={token} userId={user.id} /> : null}
       <form
         className="flex flex-col gap-4"
         onSubmit={(e) => {
@@ -120,10 +135,26 @@ export function ProfileDialog({ onClose }: { onClose(): void }) {
             try {
               await uploadAvatar(blob, filename);
             } catch (e) {
-              throw new Error(`上传失败：${e instanceof Error ? e.message : String(e)}`);
+              throw new Error(`上传失败：${avatarUploadErrorText(e)}`);
             }
             setCropping(null);
             setAvatarNotice("头像已更新");
+          }}
+        />
+      ) : null}
+      {gif ? (
+        <GifAvatarDialog
+          file={gif.file}
+          size={gif.size}
+          onCancel={() => setGif(null)}
+          onConfirm={async () => {
+            try {
+              await uploadAvatar(gif.file, gif.file.name || "avatar.gif");
+            } catch (e) {
+              throw new Error(`上传失败：${avatarUploadErrorText(e)}`);
+            }
+            setGif(null);
+            setAvatarNotice("头像已更新（动图）");
           }}
         />
       ) : null}

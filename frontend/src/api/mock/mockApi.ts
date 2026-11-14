@@ -1,7 +1,7 @@
 import type { TeamsApi } from "../client";
 import { ApiError } from "../errors";
-import type { Attachment, AuthResponse, Bot, Channel, Invite, Member, Message, Page, Team, User } from "../types";
-import { AVATAR_MAX_BYTES, AVATAR_TYPES, sniffImage } from "../../lib/avatarCrop";
+import type { Attachment, AuthResponse, Channel, ChannelUserState, Invite, Member, Message, Page, Team, User } from "../types";
+import { AVATAR_MAX_BYTES, AVATAR_MAX_DIM, AVATAR_TYPES, gifSize, sniffImage } from "../../lib/avatarCrop";
 import { inviteStatus } from "../../lib/invite";
 import { checkUpload } from "../../lib/upload";
 import { emit, nextId, nextSeq, senderOf, type MockDb, type TeamRecord } from "./db";
@@ -66,6 +66,73 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
     return { ...user };
   }
 
+  // ---------- §5.7 未读与置顶（按用户） ----------
+  const stKey = (userId: string, channelId: string) => `${userId}:${channelId}`;
+
+  function userState(user: User, channel: Channel): ChannelUserState {
+    const me = myMember(user, channel.team_id);
+    const stored = db.channelState.get(stKey(user.id, channel.id));
+    // 有效已读位置 = max(标记过的位置, 加入 team 时的 seq)
+    const last = Math.max(stored?.last_read_seq ?? 0, me ? (db.joinSeq.get(me.id) ?? 0) : 0);
+    let count = 0;
+    let mention = false;
+    for (const m of db.messages) {
+      if (m.channel_id !== channel.id || m.seq <= last || m.deleted || (m.kind ?? "message") !== "message") continue;
+      if (me && m.sender.member_id === me.id) continue;
+      count += 1;
+      if (me && m.mentions.some((x) => x.member_id === me.id)) mention = true;
+    }
+    return {
+      channel_id: channel.id,
+      team_id: channel.team_id,
+      pinned: !!stored?.pinned_at,
+      pinned_at: stored?.pinned_at ?? null,
+      last_read_seq: last,
+      unread_count: Math.min(1000, count),
+      has_unread_mention: mention,
+    };
+  }
+
+  /** 用户会话读取频道时带上本人状态 */
+  function channelView(user: User, c: Channel): Channel {
+    const st = userState(user, c);
+    return { ...c, pinned: st.pinned, pinned_at: st.pinned_at, last_read_seq: st.last_read_seq, unread_count: st.unread_count, has_unread_mention: st.has_unread_mention };
+  }
+
+  function setReadPosition(user: User, channel: Channel, seq: number): ChannelUserState {
+    const before = userState(user, channel);
+    const k = stKey(user.id, channel.id);
+    const stored = db.channelState.get(k) ?? { last_read_seq: 0, pinned_at: null };
+    const target = Math.min(seq, channel.last_message_seq);
+    if (target > before.last_read_seq) {
+      db.channelState.set(k, { ...stored, last_read_seq: target });
+      const after = userState(user, channel);
+      emit(db, { type: "channel.read", team_id: channel.team_id, data: after }, { only: user.id });
+      return after;
+    }
+    return before;
+  }
+
+  function userChannel(token: string, channelId: string): { user: User; channel: Channel } {
+    const user = authed(token);
+    const channel = db.channels.get(channelId);
+    if (!channel) throw err(404, "not_found", "频道不存在");
+    requireMember(user, channel.team_id);
+    return { user, channel };
+  }
+
+  function setPin(token: string, channelId: string, pinned: boolean): ChannelUserState {
+    const { user, channel } = userChannel(token, channelId);
+    const k = stKey(user.id, channel.id);
+    const stored = db.channelState.get(k) ?? { last_read_seq: 0, pinned_at: null };
+    const changed = pinned ? !stored.pinned_at : !!stored.pinned_at;
+    // 幂等：重复置顶保持原来的 pinned_at
+    if (changed) db.channelState.set(k, { ...stored, pinned_at: pinned ? new Date().toISOString() : null });
+    const st = userState(user, channel);
+    if (changed) emit(db, { type: "channel.pinned", team_id: channel.team_id, data: st }, { only: user.id });
+    return st;
+  }
+
   function view(t: TeamRecord, me: Member): Team {
     return { ...t, my_member_id: me.id, my_role: me.role === "bot" ? "member" : me.role };
   }
@@ -82,10 +149,13 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
       avatar_url: u.avatar_url,
       avatar_shape: null,
       avatar_color: null,
+      description: null,
       role,
       joined_at: new Date().toISOString(),
     };
     db.members.push(member);
+    // 加入 team 时之前的消息视为已读（§5.7 join_seq）
+    db.joinSeq.set(member.id, db.seq);
     return member;
   }
 
@@ -394,6 +464,8 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
       if (input.name !== undefined) {
         const name = input.name.trim();
         if ([...name].length < 1 || [...name].length > 64) throw err(400, "validation_failed", "频道名需 1–64 字符", { field: "name" });
+        // eslint-disable-next-line no-control-regex
+        if (/[\u0000-\u001f\u007f-\u009f]/.test(name)) throw err(400, "validation_failed", "name 不能包含控制字符", { field: "name" });
         const dup = [...db.channels.values()].some(
           (c) => c.team_id === channel.team_id && c.id !== channelId && c.name.toLowerCase() === name.toLowerCase(),
         );
@@ -418,32 +490,93 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
       if (me.role !== "owner" && me.role !== "admin") throw err(403, "forbidden", "只有所有者和管理员可以删除频道");
       if (channel.is_default) throw err(403, "forbidden", "默认频道不能删除");
       db.channels.delete(channelId);
+      // 软删除：消息与其附件都不再可访问（附件刷新时进 missing，§5.1 / 变更 33）
+      for (const m of db.messages) if (m.channel_id === channelId) for (const at of m.attachments) db.attachments.delete(at.id);
       db.messages = db.messages.filter((m) => m.channel_id !== channelId);
       emit(db, { type: "channel.deleted", team_id: channel.team_id, data: { id: channelId } });
     },
 
-    // §8.1 GET /bots/{id}：成员可读；非 owner/admin 的 webhook 为 null
-    async getBot(token, botId) {
+    // §3 GET /teams/{tid}/members/{mid}：单个成员（含 description）
+    async getMember(token, teamId, memberId) {
+      await delay();
+      requireMember(authed(token), teamId);
+      const m = db.members.find((x) => x.team_id === teamId && x.id === memberId);
+      if (!m) throw err(404, "not_found", "成员不存在");
+      return { ...m, description: m.type === "bot" ? (m.description ?? "") : null };
+    },
+
+    async getChannel(token, channelId) {
+      await delay();
+      const { user, channel } = userChannel(token, channelId);
+      return channelView(user, channel);
+    },
+
+    // §5.7 POST /channels/{id}/read {seq?}：只前进；省略 = 标到最新；位置变化才推 channel.read（仅本人）
+    async markChannelRead(token, channelId, seq) {
+      await delay();
+      const { user, channel } = userChannel(token, channelId);
+      if (seq !== undefined && (!Number.isInteger(seq) || seq < 0)) throw err(400, "validation_failed", "seq 必须 ≥ 0", { field: "seq" });
+      return setReadPosition(user, channel, seq ?? channel.last_message_seq);
+    },
+
+    async pinChannel(token, channelId) {
+      await delay();
+      return setPin(token, channelId, true);
+    },
+
+    async unpinChannel(token, channelId) {
+      await delay();
+      return setPin(token, channelId, false);
+    },
+
+    // §5.7 GET /me/unread：所有 team 里 unread_count > 0 或有 @ 的频道
+    async listMyUnread(token) {
       await delay();
       const user = authed(token);
-      const m = db.members.find((x) => x.type === "bot" && x.bot_id === botId);
-      if (!m) throw err(404, "not_found", "Bot 不存在");
+      const teamIds = new Set(db.members.filter((m) => m.user_id === user.id).map((m) => m.team_id));
+      return [...db.channels.values()]
+        .filter((c) => teamIds.has(c.team_id))
+        .map((c) => userState(user, c))
+        .filter((st) => st.unread_count > 0 || st.has_unread_mention);
+    },
+
+    async getMessage(token, messageId) {
+      await delay();
+      const user = authed(token);
+      const m = db.messages.find((x) => x.id === messageId);
+      if (!m || !db.channels.has(m.channel_id)) throw err(404, "not_found", "消息不存在");
       requireMember(user, m.team_id);
-      const bot: Bot = {
-        id: botId,
-        member_id: m.id,
-        team_id: m.team_id,
-        name: m.username,
-        display_name: m.display_name,
-        description: db.botDescriptions.get(botId) ?? "",
-        avatar_url: m.avatar_url,
-        avatar_source_url: null,
-        avatar_shape: m.avatar_shape,
-        avatar_color: m.avatar_color,
-        webhook: null,
-        created_at: m.joined_at,
-      };
-      return bot;
+      return m;
+    },
+
+    // §9.4 推送
+    async getVapidPublicKey(token) {
+      await delay();
+      authed(token);
+      return db.pushEnabled ? { enabled: true, public_key: db.vapidPublicKey } : { enabled: false, public_key: null };
+    },
+
+    async subscribePush(token, sub) {
+      await delay();
+      const user = authed(token);
+      if (!db.pushEnabled) throw err(503, "push_disabled", "服务器未配置推送");
+      if (!sub?.endpoint || !/^https:\/\//.test(sub.endpoint)) throw err(400, "validation_failed", "endpoint 必须是 https 地址", { field: "endpoint" });
+      const b64len = (v: string | undefined) => (v ? Math.floor((v.replace(/=+$/, "").length * 3) / 4) : 0);
+      if (b64len(sub.keys?.p256dh) !== 65) throw err(400, "validation_failed", "keys.p256dh 无效", { field: "keys.p256dh" });
+      if (b64len(sub.keys?.auth) !== 16) throw err(400, "validation_failed", "keys.auth 无效", { field: "keys.auth" });
+      const now = new Date().toISOString();
+      const prev = db.pushSubscriptions.get(sub.endpoint);
+      const rec = { id: prev?.id ?? nextId(db), user_id: user.id, endpoint: sub.endpoint, created_at: prev?.created_at ?? now, updated_at: now };
+      db.pushSubscriptions.set(sub.endpoint, rec);
+      return { id: rec.id, endpoint: rec.endpoint, created_at: rec.created_at, updated_at: rec.updated_at };
+    },
+
+    async unsubscribePush(token, endpoint) {
+      await delay();
+      const user = authed(token);
+      if (!endpoint) throw err(400, "validation_failed", "缺少 endpoint", { field: "endpoint" });
+      const rec = db.pushSubscriptions.get(endpoint);
+      if (rec && rec.user_id === user.id) db.pushSubscriptions.delete(endpoint);
     },
 
     // §10.1 PUT /me/avatar：只收 jpeg/png/gif/webp（嗅探），≤ 5 MB；→ User，向用户所在每个 team 推 member.updated
@@ -454,6 +587,10 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
       if (bytes.length > AVATAR_MAX_BYTES) throw err(413, "payload_too_large", "头像不能超过 5 MB", { max_bytes: AVATAR_MAX_BYTES });
       const type = sniffImage(bytes);
       if (!type || !AVATAR_TYPES.includes(type)) throw err(415, "unsupported_media_type", "只支持 jpg、png、gif、webp", { detected: type ?? "unknown" });
+      // 宽或高 > 4096 直接拒绝（mock 只能不解码地读出 GIF 尺寸）
+      const dim = gifSize(bytes);
+      if (dim && (dim.width > AVATAR_MAX_DIM || dim.height > AVATAR_MAX_DIM))
+        throw err(400, "validation_failed", "图片尺寸不能超过 4096×4096", { field: "avatar" });
       let bin = "";
       for (const b of bytes) bin += String.fromCharCode(b);
       return setMyAvatar(user, `data:${type};base64,${btoa(bin)}`);
@@ -461,22 +598,33 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
 
     async deleteMyAvatar(token) {
       await delay();
-      return setMyAvatar(authed(token), null);
+      const user = authed(token);
+      // 幂等：本来就没有头像也 200，但不推送（§1）
+      if (!user.avatar_url) return { ...user };
+      return setMyAvatar(user, null);
     },
 
     async listChannels(token, teamId) {
       await delay();
-      requireMember(authed(token), teamId);
-      return all([...db.channels.values()].filter((c) => c.team_id === teamId).sort((a, b) => a.created_at.localeCompare(b.created_at)));
+      const user = authed(token);
+      requireMember(user, teamId);
+      return all(
+        [...db.channels.values()]
+          .filter((c) => c.team_id === teamId)
+          .sort((a, b) => Number(b.is_default) - Number(a.is_default) || a.created_at.localeCompare(b.created_at))
+          .map((c) => channelView(user, c)),
+      );
     },
 
     async createChannel(token, teamId, input) {
       await delay();
       const me = requireMember(authed(token), teamId);
       const name = input.name.trim();
-      if (!name || name.length > 64) throw err(400, "validation_failed", "频道名需 1–64 字符", { field: "name" });
+      if (![...name].length || [...name].length > 64) throw err(400, "validation_failed", "name 长度需在 1–64 之间", { field: "name" });
+      // eslint-disable-next-line no-control-regex
+      if (/[\u0000-\u001f\u007f-\u009f]/.test(name)) throw err(400, "validation_failed", "name 不能包含控制字符", { field: "name" });
       if ([...db.channels.values()].some((c) => c.team_id === teamId && c.name.toLowerCase() === name.toLowerCase())) {
-        throw err(409, "conflict", "频道已存在");
+        throw err(409, "conflict", "频道名已存在", { field: "name" });
       }
       const channel = {
         id: nextId(db),
@@ -559,6 +707,7 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
         team_id: channel.team_id,
         channel_id: channelId,
         sender: senderOf(me),
+        kind: "message",
         content: input.content,
         mentions,
         attachments,
@@ -572,6 +721,8 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
       if (input.client_msg_id) db.clientMsgIds.set(`${me.id}:${input.client_msg_id}`, message.id);
       channel.last_message_seq = message.seq;
       emit(db, { type: "message.created", team_id: channel.team_id, data: message });
+      // 自己发消息 = 自动已读到这条，并给自己推 channel.read（§5.7）
+      setReadPosition(user, channel, message.seq);
       return message;
     },
 

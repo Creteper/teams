@@ -35,6 +35,15 @@ export interface MockDb {
   botRuns: BotRunItem[];
   /** client_msg_id 幂等：`${member_id}:${client_msg_id}` -> message id */
   clientMsgIds: Map<string, string>;
+  /** 按用户的频道状态（§5.7）：`${user_id}:${channel_id}` -> 已读位置 / 置顶时间 */
+  channelState: Map<string, { last_read_seq: number; pinned_at: string | null }>;
+  /** 成员加入时的最新 seq（加入前的消息视为已读）：member_id -> seq */
+  joinSeq: Map<string, number>;
+  /** 服务器是否配置了推送（§9.4 / §13）；mock 可用 localStorage teams.mock.push=off 关掉 */
+  pushEnabled: boolean;
+  vapidPublicKey: string;
+  /** endpoint -> 订阅 */
+  pushSubscriptions: Map<string, { id: string; user_id: string; endpoint: string; created_at: string; updated_at: string }>;
   seq: number;
   idCounter: number;
 }
@@ -359,6 +368,7 @@ export function createMockDb(): MockDb {
         const m = memberById.get(id)!;
         return { member_id: m.id, type: m.type, display_name: m.display_name };
       }),
+      kind: "message",
       attachments,
       reply_to: null,
       trigger_depth: s.type === "bot" ? 1 : 0,
@@ -386,10 +396,48 @@ export function createMockDb(): MockDb {
     msg(IDS.cGeneral, IDS.mStar, "⭐ 今日最佳：程序化 bot 头像已接入。", 3),
     msg(IDS.cFrontend, IDS.mAlice, "Discord 式四栏布局骨架已经搭好了", 30),
     msg(IDS.cRandom, IDS.mBob, "这张图的签名链接过期了（演示加载失败）", 15, [broken]),
+    // —— 未读演示（§5.7）：每个用户的已读位置见下方 channelState ——
+    msg(IDS.cFrontend, IDS.mBob, "frontend 的未读演示：登录页联调完了吗？", 12),
+    msg(IDS.cFrontend, IDS.mDave, "我这边 Safari 上头像有点糊，晚点看看", 11),
+    msg(IDS.cBackend, IDS.mBob, `<@${IDS.mAlice}> <@${IDS.mCarol}> 接口文档 §5.7 更新了，未读和置顶都有了`, 10),
+    msg(IDS.cRandom, IDS.mBob, `<@${IDS.mCarol}> 周五团建去哪？`, 9),
+    msg(IDS.cDesignGeneral, IDS.mBobDesign, `<@${IDS.mAliceDesign}> 新版配色出来了，帮忙看下`, 8),
+    msg(IDS.cDesignGeneral, IDS.mBobDesign, "图标也换了一版", 7),
+    // —— bot 声明不回复演示（§7.7）：Planner 对这条选择不回复 ——
+    msg(IDS.cGeneral, IDS.mAlice, `<@${IDS.mPlanner}> 帮我订一下明天下午的会议室`, 2),
+    msg(IDS.cGeneral, IDS.mPlanner, "订会议室不在我的服务范围内，请找行政", 1.9),
   ];
+  // 最后一条是 Planner 的“不回复”提示：kind=bot_declined、reply_to=触发消息、mentions 为空、trigger_depth=0
+  {
+    const declined = messages[messages.length - 1];
+    declined.kind = "bot_declined";
+    declined.reply_to = messages[messages.length - 2].id;
+    declined.mentions = [];
+    declined.trigger_depth = 0;
+  }
   for (const c of channels) {
     c.last_message_seq = Math.max(0, ...messages.filter((m) => m.channel_id === c.id).map((m) => m.seq));
   }
+  // 成员描述（§3）：bot 是描述，用户恒为 null
+  const descriptions = new Map<string, string>([
+    [IDS.bHelper, "团队里的 AI 助手：@Grok 提问、总结讨论、写代码片段。"],
+    [IDS.bDeploy, "部署机器人：@DeployBot 部署 staging（未配置 webhook，演示失败提示）。"],
+    [IDS.bPlanner, "每周一同步排期和待办；不在服务范围内的请求会声明不回复（消息里带 [decline] 也会触发）。"],
+    [IDS.bStar, ""],
+  ]);
+  for (const m of members) m.description = m.type === "bot" ? (descriptions.get(m.bot_id ?? "") ?? "") : null;
+
+  // 已读位置：默认视为加入时全部已读（迁移把 join_seq 设为当时最大 seq），只保留下面这些“未读演示”
+  const seqOf = (i: number) => messages[i].seq;
+  const idxOf = (content: string) => messages.findIndex((m) => m.content.startsWith(content));
+  const baseSeq = seqOf(idxOf("frontend 的未读演示")) - 1;
+  const joinSeq = new Map(members.map((m) => [m.id, baseSeq]));
+  const channelState = new Map<string, { last_read_seq: number; pinned_at: string | null }>();
+  // Alice 已经看过 general 里的全部（含 Planner 的不回复提示），frontend / backend / 设计评审 有未读；置顶 backend
+  channelState.set(`${IDS.uAlice}:${IDS.cGeneral}`, { last_read_seq: seq, pinned_at: null });
+  channelState.set(`${IDS.uAlice}:${IDS.cBackend}`, { last_read_seq: baseSeq, pinned_at: iso(60) });
+  // Carol 看过 general，其余未读（random 有 @ 她）
+  channelState.set(`${IDS.uCarol}:${IDS.cGeneral}`, { last_read_seq: seq, pinned_at: null });
 
   const inv = (
     n: number,
@@ -445,6 +493,12 @@ export function createMockDb(): MockDb {
     botRuns: [],
     listeners: new Set(),
     clientMsgIds: new Map(),
+    channelState,
+    joinSeq,
+    pushEnabled: !(typeof localStorage !== "undefined" && localStorage.getItem("teams.mock.push") === "off"),
+    // mock 的 VAPID 公钥：格式正确（65 字节 P-256 未压缩点，base64url），不是真钥匙
+    vapidPublicKey: "BM6pRJ2c1a9V0k0bS1vZ1Qy0bH3Kq2f3sJp7xg4mXh0Yb3sM0kq8Y1cHq3n0b7rA5cM2vX3pYk9wL2tR8jE6uQ0",
+    pushSubscriptions: new Map(),
     seq,
     idCounter: 1000,
   };

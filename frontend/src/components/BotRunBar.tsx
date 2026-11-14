@@ -23,16 +23,17 @@ export function BotRunBar({
       {runs.map((r) => {
         const bad = r.phase === "failed";
         const warn = r.phase === "timeout";
+        const declined = r.phase === "declined";
         return (
           <div
             key={r.key}
             data-phase={r.phase}
             className={`flex items-center gap-2 rounded-md px-3 py-1.5 text-xs ${
-              bad ? "bg-[#f23f43]/15 text-[#ff8a8c]" : warn ? "bg-[#f0b232]/15 text-[#f0b232]" : "text-[#b5bac1]"
+              bad ? "bg-[#f23f43]/15 text-[#ff8a8c]" : warn ? "bg-[#f0b232]/15 text-[#f0b232]" : declined ? "bg-white/[0.04] text-[#949ba4]" : "text-[#b5bac1]"
             }`}
           >
-            {bad || warn ? (
-              <span aria-hidden="true">{bad ? "⚠" : "⏱"}</span>
+            {bad || warn || declined ? (
+              <span aria-hidden="true">{bad ? "⚠" : warn ? "⏱" : "⊘"}</span>
             ) : (
               <span className="flex gap-0.5" aria-hidden="true">
                 <i className="teams-dot inline-block h-1.5 w-1.5 rounded-full bg-current" />

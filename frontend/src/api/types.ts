@@ -80,6 +80,10 @@ export interface Member {
   avatar_color: string | null;
   role: MemberRole;
   joined_at: Timestamp;
+  /** bot 的描述；用户成员恒为 null（§3）。旧数据 / mock 可能缺省 */
+  description?: string | null;
+  /** 已退出的成员 / 已删除的 bot：只会在 GET /teams/{tid}/members/{mid} 单个查询里出现 */
+  deleted?: boolean;
 }
 
 /** PATCH /teams/{team_id}/members/{member_id}（§3）：只能在 admin / member 之间切换 */
@@ -104,6 +108,59 @@ export interface Channel {
   created_by_member_id: ID;
   last_message_seq: number;
   created_at: Timestamp;
+  /**
+   * 以下是调用者本人的状态（§5.7）：只出现在用户会话 GET /teams/{tid}/channels、GET /channels/{id} 的响应里；
+   * POST/PATCH 频道响应和 channel.created / channel.updated 推送里没有，所以都是可选的。
+   */
+  pinned?: boolean;
+  pinned_at?: Timestamp | null;
+  last_read_seq?: number;
+  /** 最多计到 1000 */
+  unread_count?: number;
+  has_unread_mention?: boolean;
+}
+
+/** 本人的频道状态：POST /channels/{id}/read、PUT/DELETE /pin 的响应，channel.read / channel.pinned 的 data，GET /me/unread 的条目（§5.7） */
+export interface ChannelUserState {
+  channel_id: ID;
+  team_id: ID;
+  pinned: boolean;
+  pinned_at: Timestamp | null;
+  last_read_seq: number;
+  unread_count: number;
+  has_unread_mention: boolean;
+}
+
+/** GET /push/vapid-public-key（§9.4） */
+export interface VapidKeyResponse {
+  enabled: boolean;
+  public_key: string | null;
+}
+
+/** 浏览器 PushSubscription.toJSON() */
+export interface PushSubscriptionJSONBody {
+  endpoint: string;
+  expirationTime: number | null;
+  keys: { p256dh: string; auth: string };
+}
+
+/** POST /push/subscriptions → 201 新建 / 200 已存在 */
+export interface PushSubscriptionRecord {
+  id: ID;
+  endpoint: string;
+  created_at: Timestamp;
+  updated_at: Timestamp;
+}
+
+/** Service Worker 收到的推送载荷（§9.4） */
+export interface PushPayload {
+  type: "mention";
+  tag: string;
+  team: { id: ID; name: string };
+  channel: { id: ID; name: string };
+  sender: { member_id: ID; display_name: string; avatar_url: string | null };
+  message: { id: ID; seq: number; excerpt: string };
+  url: string;
 }
 
 /** PATCH /channels/{id}（§5.1）：owner/admin/创建者 */
@@ -183,9 +240,14 @@ export interface UpdateMeInput {
   display_name: string;
 }
 
+/** §5.2：普通消息或 bot 声明不回复的提示（§7.7） */
+export type MessageKind = "message" | "bot_declined";
+
 export interface Message {
   id: ID;
   seq: number;
+  /** 旧数据可能缺省，按 "message" 处理 */
+  kind?: MessageKind;
   team_id: ID;
   channel_id: ID;
   sender: MessageSender;
@@ -235,7 +297,7 @@ export interface Page<T> {
 // ---------- Bot 处理状态（docs/api.md §7.6） ----------
 
 export type BotRunFailReason = "no_webhook" | "timeout" | "network_error" | "http_error" | "invalid_url" | "message_deleted";
-export type BotRunStatus = "started" | "delivered" | "retrying" | "failed" | "completed";
+export type BotRunStatus = "started" | "delivered" | "retrying" | "failed" | "completed" | "declined";
 
 /** bot.run.* 事件的 data（每条都带 team_id、channel_id、bot_member_id、trigger_message_id、delivery_id、at） */
 export interface BotRunEvent {
@@ -253,6 +315,8 @@ export interface BotRunEvent {
   status_code?: number | null;
   /** completed */
   reply_message_id?: ID;
+  /** declined：提示消息 id；reason 为 bot 给的理由（可空） */
+  decline_message_id?: ID;
 }
 
 /** GET /channels/{id}/bot-runs?active=true 的条目（docs/api.md §7.6） */
@@ -355,10 +419,12 @@ export type ServerFrame = FrameBase &
     | { type: "member.left"; data: { member_id: ID } }
     | { type: "team.updated" | "team.joined"; data: Team }
     | {
-        type: "bot.run.started" | "bot.run.delivered" | "bot.run.retrying" | "bot.run.failed" | "bot.run.completed";
+        type: "bot.run.started" | "bot.run.delivered" | "bot.run.retrying" | "bot.run.failed" | "bot.run.completed" | "bot.run.declined";
         data: BotRunEvent;
       }
     | { type: "team.deleted" | "team.removed"; data: { team_id: ID } }
+    /** 仅本人（该用户的所有连接）：已读位置前进 / 置顶变化（§9.3） */
+    | { type: "channel.read" | "channel.pinned"; data: ChannelUserState }
     | { type: "pong"; data: Record<string, never> }
     | { type: "error"; data: { code: string; message?: string } }
   );

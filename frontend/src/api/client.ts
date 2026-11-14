@@ -6,7 +6,10 @@ import type {
   UpdateMeInput,
   UpdateMemberRoleInput,
   UpdateChannelInput,
-  Bot,
+  ChannelUserState,
+  PushSubscriptionJSONBody,
+  PushSubscriptionRecord,
+  VapidKeyResponse,
   AuthResponse,
   BotRunItem,
   UpdateTeamInput,
@@ -77,8 +80,26 @@ export interface TeamsApi {
   updateChannel(token: string, channelId: ID, input: UpdateChannelInput): Promise<Channel>;
   /** DELETE /api/v1/channels/{channel_id}（owner/admin；默认频道 403）→ 204；推送 channel.deleted {id} */
   deleteChannel(token: string, channelId: ID): Promise<void>;
-  /** GET /api/v1/bots/{bot_id}（成员可读；资料卡取 description） */
-  getBot(token: string, botId: ID): Promise<Bot>;
+  /** GET /api/v1/teams/{team_id}/members/{member_id}：单个成员资料（含 description；已退出的带 deleted: true） */
+  getMember(token: string, teamId: ID, memberId: ID): Promise<Member>;
+  /** GET /api/v1/channels/{channel_id}：含本人未读/置顶状态 */
+  getChannel(token: string, channelId: ID): Promise<Channel>;
+  /** POST /api/v1/channels/{channel_id}/read {seq?}：只前进不后退；省略 seq = 标到最新 */
+  markChannelRead(token: string, channelId: ID, seq?: number): Promise<ChannelUserState>;
+  /** PUT /api/v1/channels/{channel_id}/pin（幂等，只影响自己） */
+  pinChannel(token: string, channelId: ID): Promise<ChannelUserState>;
+  /** DELETE /api/v1/channels/{channel_id}/pin（幂等） */
+  unpinChannel(token: string, channelId: ID): Promise<ChannelUserState>;
+  /** GET /api/v1/me/unread：所有 team 里有未读的频道 */
+  listMyUnread(token: string): Promise<ChannelUserState[]>;
+  /** GET /api/v1/messages/{message_id}：单条（?msg= 定位用） */
+  getMessage(token: string, messageId: ID): Promise<Message>;
+  /** GET /api/v1/push/vapid-public-key */
+  getVapidPublicKey(token: string): Promise<VapidKeyResponse>;
+  /** POST /api/v1/push/subscriptions（body = PushSubscription.toJSON()）；未配置推送 → 503 push_disabled */
+  subscribePush(token: string, sub: PushSubscriptionJSONBody): Promise<PushSubscriptionRecord>;
+  /** DELETE /api/v1/push/subscriptions?endpoint=…（总是 204） */
+  unsubscribePush(token: string, endpoint: string): Promise<void>;
   /** PUT /api/v1/me/avatar（multipart 字段 file）→ User（§1、§10） */
   uploadMyAvatar(token: string, file: Blob, filename: string): Promise<User>;
   /** DELETE /api/v1/me/avatar → User */

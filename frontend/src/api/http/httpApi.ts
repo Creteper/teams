@@ -1,7 +1,7 @@
 import type { TeamsApi } from "../client";
 import { API_BASE_URL, API_PREFIX } from "../config";
 import { ApiError } from "../errors";
-import type { ApiErrorBody, Attachment, AttachmentUrlsResponse, BotRunItem } from "../types";
+import type { ApiErrorBody, Attachment, AttachmentUrlsResponse, BotRunItem, ChannelUserState } from "../types";
 import type { UploadOptions } from "../client";
 import { isMember } from "../../lib/memberRoles";
 
@@ -67,7 +67,18 @@ export function createHttpApi(): TeamsApi {
     updateChannel: (token, channelId, input) =>
       request(`/channels/${encodeURIComponent(channelId)}`, { method: "PATCH", token, body: input }),
     deleteChannel: (token, channelId) => request(`/channels/${encodeURIComponent(channelId)}`, { method: "DELETE", token }),
-    getBot: (token, botId) => request(`/bots/${encodeURIComponent(botId)}`, { token }),
+    getMember: (token, teamId, memberId) =>
+      request(`/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(memberId)}`, { token }),
+    getChannel: (token, channelId) => request(`/channels/${encodeURIComponent(channelId)}`, { token }),
+    markChannelRead: (token, channelId, seq) =>
+      request(`/channels/${encodeURIComponent(channelId)}/read`, { method: "POST", token, body: seq === undefined ? {} : { seq } }),
+    pinChannel: (token, channelId) => request(`/channels/${encodeURIComponent(channelId)}/pin`, { method: "PUT", token }),
+    unpinChannel: (token, channelId) => request(`/channels/${encodeURIComponent(channelId)}/pin`, { method: "DELETE", token }),
+    listMyUnread: async (token) => (await request<{ items: ChannelUserState[] }>("/me/unread", { token })).items,
+    getMessage: (token, messageId) => request(`/messages/${encodeURIComponent(messageId)}`, { token }),
+    getVapidPublicKey: (token) => request("/push/vapid-public-key", { token }),
+    subscribePush: (token, sub) => request("/push/subscriptions", { method: "POST", token, body: sub }),
+    unsubscribePush: (token, endpoint) => request("/push/subscriptions", { method: "DELETE", token, query: { endpoint } }),
     uploadMyAvatar: (token, file, filename) => {
       const fd = new FormData();
       fd.append("file", file, filename);

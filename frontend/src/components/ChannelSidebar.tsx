@@ -6,6 +6,8 @@ import { MemberAvatar } from "./MemberAvatar";
 import { GearIcon, MenuItem, PopMenu } from "./ui";
 import { RowActionsMenu } from "./RowActionsMenu";
 import { CHANNEL_ACTION_TEXT, channelActions, type ChannelAction } from "../lib/channels";
+import { sortChannels, unreadLabel, type UnreadMap } from "../lib/unread";
+import { UnreadBadge } from "./UnreadBadge";
 
 /** 第二栏：team 名 + 下拉菜单、频道列表（可新建）、底部自己 + 齿轮菜单 */
 export function ChannelSidebar({
@@ -22,6 +24,7 @@ export function ChannelSidebar({
   onEditProfile,
   myMemberId = "",
   onChannelAction,
+  unread = {},
 }: {
   team: Team | null;
   channels: Channel[];
@@ -37,6 +40,8 @@ export function ChannelSidebar({
   myMemberId?: string;
   /** 频道菜单（改名 / 删除）；不传则不显示菜单 */
   onChannelAction?: (channel: Channel, action: ChannelAction) => void;
+  /** 本人的未读 / 置顶状态（§5.7），按 channel_id */
+  unread?: UnreadMap;
 }) {
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -56,6 +61,73 @@ export function ChannelSidebar({
       setError(e instanceof Error ? e.message : String(e));
     }
   }
+
+  // 置顶的按 pinned_at 排到最前面（后端顺序不变，§5.7），单独一组
+  const { pinned, others } = sortChannels(channels, unread);
+  const renderRow = (c: Channel) => {
+    const active = c.id === currentChannelId;
+    const st = unread[c.id];
+    const isPinned = !!st?.pinned;
+    // 正在看的频道不显示未读
+    const count = active ? 0 : (st?.unread_count ?? 0);
+    const mention = !active && !!st?.has_unread_mention;
+    const hasUnread = count > 0 || mention;
+    // 没有权限的项不出现；一项都没有就不显示「⋯」和右键菜单
+    const actions = onChannelAction ? channelActions(team?.my_role, myMemberId, c, isPinned) : [];
+    const open = menuFor === c.id;
+    const label = unreadLabel(count);
+    return (
+      <li
+        key={c.id}
+        data-channel-id={c.id}
+        data-default={c.is_default ? "true" : undefined}
+        data-pinned={isPinned ? "true" : undefined}
+        data-unread={hasUnread ? (mention ? "mention" : "true") : undefined}
+        onContextMenu={
+          actions.length > 0
+            ? (e) => {
+                e.preventDefault();
+                setMenuFor(c.id);
+              }
+            : undefined
+        }
+        className={`group relative flex items-center rounded pr-1 ${
+          active
+            ? "bg-[#404249] text-white"
+            : open
+              ? "bg-[#35373c] text-[#dbdee1]"
+              : hasUnread
+                ? "text-[#f2f3f5] hover:bg-[#35373c]"
+                : "text-[#949ba4] hover:bg-[#35373c] hover:text-[#dbdee1]"
+        }`}
+      >
+        {hasUnread ? <span aria-hidden="true" className="absolute -left-2 top-1/2 h-2 w-1 -translate-y-1/2 rounded-r bg-white" /> : null}
+        <Link
+          to={`/teams/${c.team_id}/channels/${c.id}`}
+          aria-current={active ? "page" : undefined}
+          aria-label={`${c.name}${isPinned ? "（已置顶）" : ""}${mention ? `，有人 @ 你，${label ?? ""} 条未读` : label ? `，${label} 条未读` : ""}`}
+          className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-2 py-1.5 text-[15px] outline-none focus-visible:ring-2 focus-visible:ring-brand"
+        >
+          <span className="text-xl leading-none text-[#80848e]">#</span>
+          <span className={`truncate ${hasUnread ? "font-semibold" : ""}`}>{c.name}</span>
+          {isPinned ? (
+            <span aria-hidden="true" title="已置顶" className="shrink-0 text-[11px] text-[#949ba4]" data-testid="pin-icon">
+              📌
+            </span>
+          ) : null}
+        </Link>
+        {hasUnread ? <UnreadBadge count={count} mention={mention} /> : null}
+        <RowActionsMenu
+          label={`频道 ${c.name} 的操作`}
+          placement="right"
+          actions={actions.map((a) => ({ id: a, text: CHANNEL_ACTION_TEXT[a], danger: a === "delete" }))}
+          open={open}
+          onOpenChange={(o) => setMenuFor(o ? c.id : null)}
+          onAction={(id) => onChannelAction?.(c, id as ChannelAction)}
+        />
+      </li>
+    );
+  };
 
   return (
     <aside className="flex w-60 shrink-0 flex-col bg-[#2b2d31]">
@@ -110,6 +182,16 @@ export function ChannelSidebar({
       </div>
 
       <div className="flex-1 overflow-y-auto px-2 pt-4">
+        {pinned.length > 0 ? (
+          <>
+            <div className="mb-1 px-1 text-xs font-semibold uppercase tracking-wide text-[#949ba4]" data-testid="pinned-heading">
+              📌 置顶
+            </div>
+            <ul className="mb-3 flex flex-col gap-0.5" aria-label="置顶频道" data-testid="pinned-list">
+              {pinned.map(renderRow)}
+            </ul>
+          </>
+        ) : null}
         <div className="mb-1 flex items-center justify-between px-1 text-xs font-semibold uppercase tracking-wide text-[#949ba4]">
           <span>文字频道</span>
           <button
@@ -146,48 +228,8 @@ export function ChannelSidebar({
             </div>
           </div>
         ) : null}
-        <ul className="flex flex-col gap-0.5">
-          {channels.map((c) => {
-            const active = c.id === currentChannelId;
-            // 没有权限的项不出现；一项都没有就不显示「⋯」和右键菜单
-            const actions = onChannelAction ? channelActions(team?.my_role, myMemberId, c) : [];
-            const open = menuFor === c.id;
-            return (
-              <li
-                key={c.id}
-                data-channel-id={c.id}
-                data-default={c.is_default ? "true" : undefined}
-                onContextMenu={
-                  actions.length > 0
-                    ? (e) => {
-                        e.preventDefault();
-                        setMenuFor(c.id);
-                      }
-                    : undefined
-                }
-                className={`group flex items-center rounded pr-1 ${
-                  active ? "bg-[#404249] text-white" : open ? "bg-[#35373c] text-[#dbdee1]" : "text-[#949ba4] hover:bg-[#35373c] hover:text-[#dbdee1]"
-                }`}
-              >
-                <Link
-                  to={`/teams/${c.team_id}/channels/${c.id}`}
-                  aria-current={active ? "page" : undefined}
-                  className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-[15px] outline-none focus-visible:ring-2 focus-visible:ring-brand rounded"
-                >
-                  <span className="text-xl leading-none text-[#80848e]">#</span>
-                  <span className="truncate">{c.name}</span>
-                </Link>
-                <RowActionsMenu
-                  label={`频道 ${c.name} 的操作`}
-                  placement="right"
-                  actions={actions.map((a) => ({ id: a, text: CHANNEL_ACTION_TEXT[a], danger: a === "delete" }))}
-                  open={open}
-                  onOpenChange={(o) => setMenuFor(o ? c.id : null)}
-                  onAction={(id) => onChannelAction?.(c, id as ChannelAction)}
-                />
-              </li>
-            );
-          })}
+        <ul className="flex flex-col gap-0.5" aria-label="文字频道">
+          {others.map(renderRow)}
         </ul>
       </div>
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { BotRunEvent, Message } from "../api/types";
-import { BOT_RUN_TIMEOUT_MS, botRunText, botRunsReducer, isDismissable, type BotRunState } from "./botRuns";
+import { BOT_RUN_TIMEOUT_MS, DECLINED_SHOW_MS, botRunText, botRunsReducer, isDismissable, type BotRunState } from "./botRuns";
 
 const ev = (extra: Partial<BotRunEvent> = {}): BotRunEvent => ({
   team_id: "t",
@@ -99,5 +99,38 @@ describe("按角色显示失败文案", () => {
   it("非失败状态两种角色文案一致", () => {
     const run = { ...failed, phase: "delivered" as const };
     expect(botRunText(run, "Grok", { technical: false })).toBe(botRunText(run, "Grok", { technical: true }));
+  });
+});
+
+describe("bot 声明不回复（§7.7）", () => {
+  const declinedMsg = (content: string): Message => ({ ...reply("m1"), id: "dm", kind: "bot_declined", content, trigger_depth: 0 });
+  it("bot.run.declined → 终态 declined（显示理由，可关闭），之后的事件不覆盖，8 秒后自动收起", () => {
+    let s = botRunsReducer({}, { type: "event", event: "started", data: ev(), now: 0 });
+    s = botRunsReducer(s, { type: "event", event: "declined", data: ev({ decline_message_id: "dm", reason: "不在服务范围" }), now: 100 });
+    expect(s.d1).toMatchObject({ phase: "declined", reason: "不在服务范围", endedAt: 100 });
+    expect(botRunText(s.d1, "Dean")).toBe("Dean 选择不回复：不在服务范围");
+    expect(isDismissable(s.d1)).toBe(true);
+    expect(botRunsReducer(s, { type: "event", event: "delivered", data: ev(), now: 200 })).toBe(s);
+    expect(botRunsReducer(s, { type: "tick", now: 100 + DECLINED_SHOW_MS - 1 })).toBe(s);
+    expect(botRunsReducer(s, { type: "tick", now: 100 + DECLINED_SHOW_MS })).toEqual({});
+  });
+  it("理由为空只显示「选择不回复」", () => {
+    const s = botRunsReducer({}, { type: "event", event: "declined", data: ev({ reason: null }), now: 0 });
+    expect(botRunText(s.d1, "Dean")).toBe("Dean 选择不回复");
+  });
+  it("kind=bot_declined 的消息先到也能把对应运行标成 declined；之后的普通回复不移除", () => {
+    let s = botRunsReducer({}, { type: "event", event: "delivered", data: ev(), now: 0 });
+    s = botRunsReducer(s, { type: "message", message: declinedMsg("找行政"), now: 5 });
+    expect(s.d1).toMatchObject({ phase: "declined", reason: "找行政" });
+    s = botRunsReducer(s, { type: "message", message: reply("m1") });
+    expect(s.d1.phase).toBe("declined");
+  });
+  it("hydrate 跳过 declined", () => {
+    const s = botRunsReducer({}, {
+      type: "hydrate",
+      now: 0,
+      items: [{ team_id: "t", channel_id: "c", bot_member_id: "bot", trigger_message_id: "m1", delivery_id: "d1", status: "declined", attempt: 1, started_at: "", next_retry_at: null, reason: null, status_code: null, reply_message_id: "dm" }],
+    } as never);
+    expect(s).toEqual({});
   });
 });

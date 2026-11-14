@@ -1,11 +1,15 @@
 import type { Attachment, Message } from "../api/types";
 
-/** 找出即将过期（now + marginMs 之前到期，按附件的 expires_at）的附件 id；跳过本地 data:/blob: */
-export function idsNeedingRefresh(messages: Message[], now: number, marginMs = 5 * 60_000): string[] {
+/**
+ * 找出即将过期（now + marginMs 之前到期，按附件的 expires_at）的附件 id；跳过本地 data:/blob:，
+ * 也跳过已确认不可访问的（gone：/attachments/urls 的 missing、GET /attachments/{id} 404——例如所在频道已删除，§5.1）。
+ */
+export function idsNeedingRefresh(messages: Message[], now: number, marginMs = 5 * 60_000, gone?: ReadonlySet<string>): string[] {
   const ids = new Set<string>();
   for (const m of messages) {
     for (const a of m.attachments) {
       if (a.url.startsWith("data:") || a.url.startsWith("blob:")) continue;
+      if (gone?.has(a.id)) continue;
       const exp = Date.parse(a.expires_at);
       if (Number.isFinite(exp) && exp - now <= marginMs) ids.add(a.id);
     }

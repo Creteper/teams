@@ -6,11 +6,13 @@ import type { BotRunEvent, BotRunItem, Message } from "../api/types";
  * - 发送方发出含 bot 的消息后先显示乐观状态（optimistic），收到 started 后用 delivery_id 接管；
  * - started / delivered / retrying 显示“正在处理…/正在重试…”；
  * - completed 或该 bot 在同频道 reply_to 这条消息的回复 → 收起；
+ * - declined（bot.run.declined 或该 bot 的 kind=bot_declined 提示消息，§7.7）→ 结束“正在处理”，显示“选择不回复”，
+ *   可关闭，DECLINED_SHOW_MS 后自动收起；declined 是终态，之后的 delivered/retrying 不覆盖它；
  * - failed → 显示失败原因，需手动关闭；
  * - 已开始 90 秒仍未完成 → 显示“暂时没有回复”，可关闭。
  */
 
-export type RunPhase = "optimistic" | "started" | "delivered" | "retrying" | "failed" | "timeout";
+export type RunPhase = "optimistic" | "started" | "delivered" | "retrying" | "failed" | "timeout" | "declined";
 
 export interface BotRun {
   /** delivery_id，乐观状态时为 opt:<trigger>:<bot> */
@@ -24,16 +26,20 @@ export interface BotRun {
   attempt?: number | null;
   reason?: string | null;
   status_code?: number | null;
+  /** declined：进入该状态的时间（用于自动收起） */
+  endedAt?: number;
 }
 
 export type BotRunState = Record<string, BotRun>;
 
 export const BOT_RUN_TIMEOUT_MS = 90_000;
+/** “选择不回复”提示保留多久后自动收起 */
+export const DECLINED_SHOW_MS = 8_000;
 
 export type BotRunAction =
   | { type: "optimistic"; trigger_message_id: string; channel_id: string; bot_member_ids: string[]; now: number }
-  | { type: "event"; event: "started" | "delivered" | "retrying" | "failed" | "completed"; data: BotRunEvent; now: number }
-  | { type: "message"; message: Message }
+  | { type: "event"; event: "started" | "delivered" | "retrying" | "failed" | "completed" | "declined"; data: BotRunEvent; now: number }
+  | { type: "message"; message: Message; now?: number }
   | { type: "hydrate"; items: BotRunItem[]; now: number }
   | { type: "tick"; now: number }
   | { type: "dismiss"; key: string };
@@ -78,6 +84,8 @@ export function botRunsReducer(state: BotRunState, action: BotRunAction): BotRun
       const existingKey = findKey(state, d);
       if (action.event === "completed") return without(state, existingKey);
       const prev = existingKey ? state[existingKey] : undefined;
+      // declined 是终态：之后到达的 delivered / retrying / failed 不覆盖
+      if (prev?.phase === "declined" && action.event !== "declined") return state;
       const base = without(state, existingKey);
       const run: BotRun = {
         key: d.delivery_id,
@@ -90,16 +98,23 @@ export function botRunsReducer(state: BotRunState, action: BotRunAction): BotRun
         attempt: d.attempt ?? prev?.attempt,
         reason: d.reason ?? (action.event === "failed" ? prev?.reason : undefined),
         status_code: d.status_code ?? null,
+        endedAt: action.event === "declined" ? action.now : undefined,
       };
       return { ...base, [run.key]: run };
     }
     case "message": {
       const m = action.message;
       if (m.sender.type !== "bot" || !m.reply_to) return state;
+      const declined = m.kind === "bot_declined";
       let next = state;
       for (const r of Object.values(state)) {
         if (r.bot_member_id === m.sender.member_id && r.channel_id === m.channel_id && r.trigger_message_id === m.reply_to) {
-          next = without(next, r.key);
+          if (declined) {
+            next = { ...next, [r.key]: { ...r, phase: "declined", reason: m.content || r.reason || null, endedAt: action.now ?? Date.now() } };
+          } else if (r.phase !== "declined") {
+            // 声明不回复之后 bot 仍可回复，但状态保持 declined（§7.6）
+            next = without(next, r.key);
+          }
         }
       }
       return next;
@@ -107,7 +122,7 @@ export function botRunsReducer(state: BotRunState, action: BotRunAction): BotRun
     case "hydrate": {
       let next = { ...state };
       for (const it of action.items) {
-        if (it.status === "completed") continue;
+        if (it.status === "completed" || it.status === "declined") continue;
         const data: BotRunEvent = {
           team_id: it.team_id,
           channel_id: it.channel_id,
@@ -132,6 +147,8 @@ export function botRunsReducer(state: BotRunState, action: BotRunAction): BotRun
         if (active && action.now - r.startedAt >= BOT_RUN_TIMEOUT_MS) {
           next[k] = { ...r, phase: "timeout" };
           changed = true;
+        } else if (r.phase === "declined" && action.now - (r.endedAt ?? r.startedAt) >= DECLINED_SHOW_MS) {
+          changed = true; // 自动收起
         } else next[k] = r;
       }
       return changed ? next : state;
@@ -162,6 +179,8 @@ export function botRunText(run: BotRun, botName: string, opts: { technical?: boo
       return `${botName} 正在重试…${run.attempt ? `（第 ${run.attempt} 次）` : ""}`;
     case "timeout":
       return `${botName} 暂时没有回复`;
+    case "declined":
+      return `${botName} 选择不回复${run.reason ? `：${run.reason}` : ""}`;
     case "failed": {
       if (!technical) return `${botName} 暂时无法响应`;
       const base = FAIL_TEXT[run.reason ?? ""] ?? "处理失败";
@@ -171,4 +190,4 @@ export function botRunText(run: BotRun, botName: string, opts: { technical?: boo
   }
 }
 
-export const isDismissable = (run: BotRun) => run.phase === "failed" || run.phase === "timeout";
+export const isDismissable = (run: BotRun) => run.phase === "failed" || run.phase === "timeout" || run.phase === "declined";

@@ -14,28 +14,35 @@ export function formatJoinedAt(iso: string): string {
 }
 
 /**
- * 成员资料卡：头像、显示名、用户名、角色、加入时间（都来自 Member，§3）；
- * bot 另外显示描述——Member 里没有 description，按 member.bot_id 调 GET /bots/{bot_id}（§8.1，成员可读）。
+ * 成员资料卡（§3）：打开时调 GET /teams/{team_id}/members/{member_id} 拿最新资料；
+ * 头像、显示名、用户名、角色、加入时间；bot 另外显示 description（用户成员恒为 null，不显示）。
+ * 请求返回前先用列表里的 Member 渲染；已退出 / 已删除的成员显示“已退出”。
  */
-export function MemberProfileDialog({ token, member, isMe, onClose }: { token: string; member: Member; isMe: boolean; onClose(): void }) {
+export function MemberProfileDialog({ token, member: listed, isMe, onClose }: { token: string; member: Member; isMe: boolean; onClose(): void }) {
+  const [fresh, setFresh] = useState<Member | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const member = fresh ?? listed;
   const isBot = member.type === "bot";
-  const [desc, setDesc] = useState<{ loading: boolean; text: string | null; error: string | null }>({
-    loading: isBot && !!member.bot_id,
-    text: null,
-    error: null,
-  });
 
   useEffect(() => {
-    if (!isBot || !member.bot_id) return;
     let cancelled = false;
+    setLoading(true);
     api
-      .getBot(token, member.bot_id)
-      .then((b) => !cancelled && setDesc({ loading: false, text: b.description, error: null }))
-      .catch((e: unknown) => !cancelled && setDesc({ loading: false, text: null, error: e instanceof Error ? e.message : String(e) }));
+      .getMember(token, listed.team_id, listed.id)
+      .then((m) => {
+        if (cancelled) return;
+        setFresh(m);
+        setError(null);
+      })
+      .catch((e: unknown) => !cancelled && setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
     };
-  }, [token, isBot, member.bot_id]);
+  }, [token, listed.team_id, listed.id]);
+
+  const description = member.description ?? null;
 
   return (
     <DialogShell label="成员资料" title="成员资料" onClose={onClose} width="max-w-sm">
@@ -50,6 +57,7 @@ export function MemberProfileDialog({ token, member, isMe, onClose }: { token: s
           <div className="text-sm text-[#b5bac1]">
             @{member.username}
             {isMe ? <span className="ml-1 text-xs text-[#949ba4]">（你）</span> : null}
+            {member.deleted ? <span className="ml-1 text-xs text-[#949ba4]">（已退出）</span> : null}
           </div>
         </div>
       </div>
@@ -66,12 +74,12 @@ export function MemberProfileDialog({ token, member, isMe, onClose }: { token: s
           <>
             <dt className="text-[#949ba4]">描述</dt>
             <dd className="whitespace-pre-wrap break-words text-[#dbdee1]" data-field="description">
-              {desc.loading ? (
+              {loading && !description ? (
                 <Spinner size="sm" aria-label="加载描述" />
-              ) : desc.error ? (
-                <span className="text-[#f23f43]">描述加载失败：{desc.error}</span>
-              ) : desc.text ? (
-                desc.text
+              ) : error && !description ? (
+                <span className="text-[#f23f43]">资料加载失败：{error}</span>
+              ) : description ? (
+                description
               ) : (
                 <span className="text-[#949ba4]">暂无描述</span>
               )}
