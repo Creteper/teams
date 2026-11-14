@@ -1,6 +1,7 @@
 import type { TeamsApi } from "../client";
 import { ApiError } from "../errors";
-import type { Attachment, AttachmentUrl, AuthResponse, Member, Message, Page, Team, User } from "../types";
+import type { Attachment, AttachmentUrl, AuthResponse, Invite, Member, Message, Page, Team, User } from "../types";
+import { inviteStatus } from "../../lib/invite";
 import { checkUpload } from "../../lib/upload";
 import { emit, nextId, nextSeq, senderOf, type MockDb, type TeamRecord } from "./db";
 
@@ -76,7 +77,109 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
     return member;
   }
 
+  function requireManager(user: User, teamId: string): Member {
+    const me = requireMember(user, teamId);
+    if (me.role !== "owner" && me.role !== "admin") throw err(403, "forbidden", "只有 owner/admin 可以管理邀请");
+    return me;
+  }
+
+  function findInvite(code: string): Invite {
+    const invite = db.invites.find((i) => i.code === code);
+    if (!invite) throw err(404, "invite_not_found", "邀请链接不存在");
+    return invite;
+  }
+
+  const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+  function newCode(): string {
+    let code = "";
+    do {
+      code = Array.from({ length: 8 }, () => CODE_CHARS[Math.floor(Math.random() * CODE_CHARS.length)]).join("");
+    } while (db.invites.some((i) => i.code === code));
+    return code;
+  }
+
   return {
+    async previewInvite(code) {
+      await delay();
+      const invite = findInvite(code);
+      const team = db.teams.get(invite.team_id)!;
+      const status = inviteStatus(invite);
+      return {
+        code: invite.code,
+        team: {
+          id: team.id,
+          name: team.name,
+          icon_url: team.icon_url,
+          member_count: db.members.filter((m) => m.team_id === team.id).length,
+        },
+        expires_at: invite.expires_at,
+        valid: status === "active",
+        ...(status === "active" ? {} : { reason: status }),
+      };
+    },
+
+    async acceptInvite(token, code) {
+      await delay();
+      const user = authed(token);
+      const invite = findInvite(code);
+      const team = db.teams.get(invite.team_id)!;
+      const existing = myMember(user, team.id);
+      if (existing) return { team: view(team, existing), member: existing, already_member: true };
+      const status = inviteStatus(invite);
+      if (status !== "active") {
+        const text = { expired: "邀请链接已过期", revoked: "邀请链接已作废", exhausted: "邀请链接次数已用完" }[status];
+        throw err(410, `invite_${status}`, text);
+      }
+      const member = addUserMember(team.id, user, "member");
+      invite.uses += 1;
+      const teamView = view(team, member);
+      emit(db, { type: "team.joined", team_id: team.id, data: teamView }, { only: user.id });
+      emit(db, { type: "member.joined", team_id: team.id, data: member }, { except: user.id });
+      return { team: teamView, member };
+    },
+
+    async createInvite(token, teamId, input) {
+      await delay();
+      const me = requireManager(authed(token), teamId);
+      const { expires_in_seconds: ttl, max_uses } = input;
+      if (ttl !== undefined && (!Number.isInteger(ttl) || ttl < 60 || ttl > 2_592_000)) {
+        throw err(400, "validation_failed", "expires_in_seconds 需在 60..2592000", { field: "expires_in_seconds" });
+      }
+      if (max_uses !== undefined && (!Number.isInteger(max_uses) || max_uses < 1 || max_uses > 1000)) {
+        throw err(400, "validation_failed", "max_uses 需在 1..1000", { field: "max_uses" });
+      }
+      const code = newCode();
+      const invite: Invite = {
+        id: nextId(db),
+        code,
+        team_id: teamId,
+        url_path: `/invite/${code}`,
+        expires_at: ttl ? new Date(Date.now() + ttl * 1000).toISOString() : null,
+        max_uses: max_uses ?? null,
+        uses: 0,
+        revoked_at: null,
+        created_by: me.id,
+        created_at: new Date().toISOString(),
+      };
+      db.invites.push(invite);
+      return invite;
+    },
+
+    async listInvites(token, teamId) {
+      await delay();
+      requireManager(authed(token), teamId);
+      const items = db.invites.filter((i) => i.team_id === teamId).sort((a, b) => b.created_at.localeCompare(a.created_at) || b.id.localeCompare(a.id));
+      return all(items);
+    },
+
+    async revokeInvite(token, teamId, inviteId) {
+      await delay();
+      requireManager(authed(token), teamId);
+      const invite = db.invites.find((i) => i.id === inviteId && i.team_id === teamId);
+      if (!invite) throw err(404, "not_found", "邀请不存在");
+      invite.revoked_at ??= new Date().toISOString();
+    },
+
     async register(input) {
       await delay();
       const username = input.username.trim().toLowerCase();

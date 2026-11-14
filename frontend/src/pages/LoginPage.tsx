@@ -1,19 +1,21 @@
 import { useState, type FormEvent } from "react";
-import { Link, Navigate, useLocation, useNavigate } from "react-router";
+import { Link, Navigate, useNavigate, useSearchParams } from "react-router";
 import { Button, Input, Label } from "@heroui/react";
 import { useAuth } from "../auth/AuthContext";
 import { USE_MOCK } from "../api/config";
 import { AuthLayout } from "./AuthLayout";
+import { safeRedirect, withRedirect } from "../lib/invite";
 
 export default function LoginPage() {
   const { user, login } = useAuth();
   const navigate = useNavigate();
-  const location = useLocation();
+  const [params] = useSearchParams();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const from = (location.state as { from?: string } | null)?.from ?? "/teams";
+  // 只允许站内路径，防止开放重定向
+  const from = safeRedirect(params.get("redirect"));
 
   if (user) return <Navigate to={from} replace />;
 
@@ -53,7 +55,7 @@ export default function LoginPage() {
         </Button>
         <p className="text-sm text-[#949ba4]">
           还没有账号？
-          <Link to="/register" className="text-[#00a8fc] hover:underline">
+          <Link to={params.get("redirect") ? withRedirect("/register", from) : "/register"} className="text-[#00a8fc] hover:underline">
             注册
           </Link>
         </p>

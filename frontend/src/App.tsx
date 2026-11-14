@@ -6,6 +6,8 @@ import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
 import TeamsPage from "./pages/TeamsPage";
 import TeamPage from "./pages/TeamPage";
+import InvitePage from "./pages/InvitePage";
+import { withRedirect } from "./lib/invite";
 
 function RequireAuth({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
@@ -17,7 +19,7 @@ function RequireAuth({ children }: { children: ReactNode }) {
       </div>
     );
   }
-  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  if (!user) return <Navigate to={withRedirect("/login", location.pathname + location.search)} replace />;
   return <>{children}</>;
 }
 
@@ -26,6 +28,8 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/register" element={<RegisterPage />} />
+      {/* 邀请落地页：无需登录即可预览 */}
+      <Route path="/invite/:code" element={<InvitePage />} />
       <Route
         path="/teams"
         element={

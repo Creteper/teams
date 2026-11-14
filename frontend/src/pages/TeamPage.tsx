@@ -9,6 +9,7 @@ import { Composer } from "../components/Composer";
 import { MemberList } from "../components/MemberList";
 import { MessageList } from "../components/MessageList";
 import { TeamDialog } from "../components/TeamForms";
+import { InviteDialog } from "../components/InviteDialog";
 import { TeamRail } from "../components/TeamRail";
 import { useTeams } from "../hooks";
 import { mergeMessages } from "../lib/messages";
@@ -29,6 +30,7 @@ export default function TeamPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false);
   const [olderCursor, setOlderCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -219,6 +221,7 @@ export default function TeamPage() {
           navigate(`/teams/${teamId}/channels/${c.id}`);
         }}
         onLogout={() => void logout()}
+        onInvite={canManage ? () => setInviteOpen(true) : undefined}
       />
 
       <main className="flex min-w-0 flex-1 flex-col">
@@ -268,14 +271,16 @@ export default function TeamPage() {
         )}
       </main>
 
-      <MemberList
-        members={members}
-        canAdd={canManage}
-        onAdd={async (username) => {
-          const m = await api.addMember(token, teamId, { username, role: "member" });
-          setMembers((prev) => [...prev.filter((x) => x.id !== m.id), m]);
-        }}
-      />
+      <MemberList members={members} onInvite={canManage ? () => setInviteOpen(true) : undefined} />
+
+      {inviteOpen && team ? (
+        <InviteDialog
+          token={token}
+          team={team}
+          onClose={() => setInviteOpen(false)}
+          onMemberAdded={(m) => setMembers((prev) => [...prev.filter((x) => x.id !== m.id), m])}
+        />
+      ) : null}
 
       {dialogOpen ? (
         <TeamDialog

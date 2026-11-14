@@ -74,6 +74,13 @@ export function createHttpApi(): TeamsApi {
       form.append("file", file);
       return request(`/teams/${encodeURIComponent(teamId)}/attachments`, { method: "POST", token, body: form });
     },
+    previewInvite: (code) => request(`/invites/${encodeURIComponent(code)}`),
+    acceptInvite: (token, code) => request(`/invites/${encodeURIComponent(code)}/accept`, { method: "POST", token }),
+    createInvite: (token, teamId, input) =>
+      request(`/teams/${encodeURIComponent(teamId)}/invites`, { method: "POST", token, body: input }),
+    listInvites: (token, teamId) => request(`/teams/${encodeURIComponent(teamId)}/invites`, { token }),
+    revokeInvite: (token, teamId, inviteId) =>
+      request(`/teams/${encodeURIComponent(teamId)}/invites/${encodeURIComponent(inviteId)}`, { method: "DELETE", token }),
     getAttachmentUrl: (token, id) => request(`/attachments/${encodeURIComponent(id)}`, { token }),
     refreshAttachmentUrls: async (token, ids) => {
       // 响应形状按 {items:[{id,url,expires_at}]} 处理（待文档确认）

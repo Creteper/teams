@@ -1,12 +1,15 @@
 import { useState, type FormEvent } from "react";
-import { Link, Navigate, useNavigate } from "react-router";
+import { Link, Navigate, useNavigate, useSearchParams } from "react-router";
 import { Button, Input, Label } from "@heroui/react";
 import { useAuth } from "../auth/AuthContext";
 import { AuthLayout } from "./AuthLayout";
+import { safeRedirect, withRedirect } from "../lib/invite";
 
 export default function RegisterPage() {
   const { user, register } = useAuth();
   const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const target = safeRedirect(params.get("redirect"));
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
@@ -14,7 +17,7 @@ export default function RegisterPage() {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  if (user) return <Navigate to="/teams" replace />;
+  if (user) return <Navigate to={target} replace />;
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -30,7 +33,7 @@ export default function RegisterPage() {
     setError(null);
     try {
       await register({ username, display_name: displayName, password });
-      navigate("/teams", { replace: true });
+      navigate(target, { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -68,7 +71,7 @@ export default function RegisterPage() {
         </Button>
         <p className="text-sm text-[#949ba4]">
           已有账号？
-          <Link to="/login" className="text-[#00a8fc] hover:underline">
+          <Link to={params.get("redirect") ? withRedirect("/login", target) : "/login"} className="text-[#00a8fc] hover:underline">
             登录
           </Link>
         </p>

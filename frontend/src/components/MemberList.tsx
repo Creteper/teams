@@ -1,78 +1,23 @@
-import { useState } from "react";
-import { Button, Input } from "@heroui/react";
 import type { Member } from "../api/types";
 import { BotBadge, MemberAvatar } from "./MemberAvatar";
 
 /**
  * 右侧成员列表：按“成员 / Bot”分组，bot 名字旁带 BOT 标记（文档无在线状态，不显示）。
- * owner/admin 可按用户名添加成员（POST /teams/{id}/members）。
+ * owner/admin 显示“邀请成员”（弹窗内含邀请链接和按用户名添加）。
  */
-export function MemberList({
-  members,
-  canAdd,
-  onAdd,
-}: {
-  members: Member[];
-  canAdd: boolean;
-  onAdd(username: string): Promise<void>;
-}) {
+export function MemberList({ members, onInvite }: { members: Member[]; onInvite?: () => void }) {
   const users = members.filter((m) => m.type === "user");
   const bots = members.filter((m) => m.type === "bot");
-  const [adding, setAdding] = useState(false);
-  const [username, setUsername] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function submit() {
-    setBusy(true);
-    setError(null);
-    try {
-      await onAdd(username);
-      setUsername("");
-      setAdding(false);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <aside aria-label="成员列表" className="hidden w-60 shrink-0 overflow-y-auto bg-[#2b2d31] px-2 py-4 lg:block">
-      {canAdd ? (
-        <div className="mb-4 px-1">
-          {adding ? (
-            <div className="flex flex-col gap-2 rounded bg-[#1e1f22] p-2">
-              <Input
-                aria-label="用户名"
-                placeholder="按用户名添加成员"
-                value={username}
-                autoFocus
-                onChange={(e) => setUsername(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" && username.trim()) void submit();
-                }}
-              />
-              {error ? <p className="text-xs text-[#f23f43]">{error}</p> : null}
-              <div className="flex justify-end gap-2">
-                <Button size="sm" variant="ghost" onPress={() => setAdding(false)}>
-                  取消
-                </Button>
-                <Button size="sm" variant="primary" isPending={busy} isDisabled={!username.trim()} onPress={() => void submit()}>
-                  添加
-                </Button>
-              </div>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={() => setAdding(true)}
-              className="w-full rounded px-2 py-1.5 text-left text-sm text-[#b5bac1] hover:bg-[#35373c] hover:text-white"
-            >
-              ＋ 添加成员
-            </button>
-          )}
-        </div>
+      {onInvite ? (
+        <button
+          type="button"
+          onClick={onInvite}
+          className="mb-4 w-full rounded px-2 py-1.5 text-left text-sm text-[#b5bac1] hover:bg-[#35373c] hover:text-white"
+        >
+          ＋ 邀请成员
+        </button>
       ) : null}
       <Group title={`成员 — ${users.length}`} items={users} />
       <Group title={`Bot — ${bots.length}`} items={bots} />

@@ -191,6 +191,49 @@ export interface Page<T> {
   has_more: boolean;
 }
 
+// ---------- 邀请链接（Gus 定稿，待写入 docs/api.md） ----------
+
+export type InviteInvalidReason = "expired" | "revoked" | "exhausted";
+
+export interface Invite {
+  id: ID;
+  code: string;
+  team_id: ID;
+  /** 站内路径，如 `/invite/<code>`；完整链接 = location.origin + url_path */
+  url_path: string;
+  /** null = 永久 */
+  expires_at: Timestamp | null;
+  /** null = 不限次 */
+  max_uses: number | null;
+  uses: number;
+  revoked_at: Timestamp | null;
+  created_by: ID;
+  created_at: Timestamp;
+}
+
+/** GET /invites/{code}（无需登录） */
+export interface InvitePreview {
+  code: string;
+  team: { id: ID; name: string; icon_url: string | null; member_count: number };
+  expires_at: Timestamp | null;
+  valid: boolean;
+  reason?: InviteInvalidReason;
+}
+
+export interface CreateInviteInput {
+  /** 60..2592000；不填 = 永久 */
+  expires_in_seconds?: number;
+  /** 1..1000；不填 = 不限次 */
+  max_uses?: number;
+}
+
+/** POST /invites/{code}/accept */
+export interface AcceptInviteResponse {
+  team: Team;
+  member: Member;
+  already_member?: boolean;
+}
+
 // ---------- 错误（§0.2） ----------
 
 export interface ApiErrorBody {

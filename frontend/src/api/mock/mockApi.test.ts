@@ -175,3 +175,62 @@ describe("mock api（数据形状同 docs/api.md）", () => {
     rt.disconnect();
   });
 });
+
+describe("mock 邀请链接", () => {
+  it("预览无需登录；有效/过期/作废/用尽；不存在 404", async () => {
+    const { api } = setup();
+    const ok = await api.previewInvite("OpenLab8");
+    expect(ok).toMatchObject({ code: "OpenLab8", valid: true, team: { name: "Open Lab", member_count: 2 } });
+    expect(ok.reason).toBeUndefined();
+    expect(await api.previewInvite("Expired1")).toMatchObject({ valid: false, reason: "expired" });
+    expect(await api.previewInvite("Revoked1")).toMatchObject({ valid: false, reason: "revoked" });
+    expect(await api.previewInvite("UsedUp01")).toMatchObject({ valid: false, reason: "exhausted" });
+    await expect(api.previewInvite("nope")).rejects.toMatchObject({ status: 404, code: "invite_not_found" });
+  });
+
+  it("accept：加入 + uses+1 + team.joined 只给本人；再次 accept 返回 already_member；失效 410", async () => {
+    const { db, api } = setup();
+    const { token } = await api.login({ username: "alice", password: "x" });
+    const rt = createMockRealtime(db, { pushIntervalMs: 0 });
+    const frames: string[] = [];
+    rt.subscribe((f) => frames.push(f.type));
+    rt.connect(token);
+    const r = await api.acceptInvite(token, "OpenLab8");
+    expect(r.already_member).toBeFalsy();
+    expect(r.team.id).toBe(IDS.tOpen);
+    expect(r.member.type).toBe("user");
+    expect(db.invites.find((i) => i.code === "OpenLab8")!.uses).toBe(4);
+    expect(frames).toContain("team.joined");
+    expect(frames).not.toContain("member.joined");
+    const again = await api.acceptInvite(token, "OpenLab8");
+    expect(again.already_member).toBe(true);
+    expect(db.invites.find((i) => i.code === "OpenLab8")!.uses).toBe(4);
+    const bob = await api.login({ username: "bob", password: "x" });
+    await expect(api.acceptInvite(bob.token, "Expired1")).rejects.toMatchObject({ status: 410, code: "invite_expired" });
+    await expect(api.acceptInvite(bob.token, "Revoked1")).rejects.toMatchObject({ status: 410, code: "invite_revoked" });
+    await expect(api.acceptInvite(bob.token, "UsedUp01")).rejects.toMatchObject({ status: 410, code: "invite_exhausted" });
+    rt.disconnect();
+  });
+
+  it("创建 / 列表 / 作废（仅 owner/admin），参数范围校验，次数用尽", async () => {
+    const { api } = setup();
+    const alice = await api.login({ username: "alice", password: "x" });
+    const inv = await api.createInvite(alice.token, IDS.tDev, { expires_in_seconds: 1800, max_uses: 1 });
+    expect(inv.url_path).toBe(`/invite/${inv.code}`);
+    expect(inv.max_uses).toBe(1);
+    const forever = await api.createInvite(alice.token, IDS.tDev, {});
+    expect(forever).toMatchObject({ expires_at: null, max_uses: null });
+    await expect(api.createInvite(alice.token, IDS.tDev, { expires_in_seconds: 10 })).rejects.toMatchObject({ status: 400 });
+    await expect(api.createInvite(alice.token, IDS.tDev, { max_uses: 1001 })).rejects.toMatchObject({ status: 400 });
+    const carol = await api.login({ username: "carol", password: "x" });
+    await expect(api.createInvite(carol.token, IDS.tDev, {})).rejects.toMatchObject({ status: 403 });
+    const list = await api.listInvites(alice.token, IDS.tDev);
+    expect(list.items[0].id).toBe(forever.id);
+    // 用掉唯一一次
+    const tina = await api.register({ username: "tina", password: "longenough", display_name: "Tina" });
+    await api.acceptInvite(tina.token, inv.code);
+    expect(await api.previewInvite(inv.code)).toMatchObject({ valid: false, reason: "exhausted" });
+    await api.revokeInvite(alice.token, IDS.tDev, forever.id);
+    expect(await api.previewInvite(forever.code)).toMatchObject({ valid: false, reason: "revoked" });
+  });
+});

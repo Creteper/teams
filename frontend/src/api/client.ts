@@ -1,8 +1,12 @@
 import type {
   AddMemberInput,
   Attachment,
+  AcceptInviteResponse,
   AttachmentUrl,
   AuthResponse,
+  CreateInviteInput,
+  Invite,
+  InvitePreview,
   Channel,
   CreateChannelInput,
   CreateTeamInput,
@@ -59,6 +63,17 @@ export interface TeamsApi {
 
   /** POST /api/v1/teams/{team_id}/attachments（multipart，字段 file） */
   uploadAttachment(token: string, teamId: ID, file: File): Promise<Attachment>;
+  /** GET /api/v1/invites/{code}（无需登录）；不存在 → 404 invite_not_found */
+  previewInvite(code: string): Promise<InvitePreview>;
+  /** POST /api/v1/invites/{code}/accept；失效 → 410 invite_expired/invite_revoked/invite_exhausted */
+  acceptInvite(token: string, code: string): Promise<AcceptInviteResponse>;
+  /** POST /api/v1/teams/{team_id}/invites（owner/admin） */
+  createInvite(token: string, teamId: ID, input: CreateInviteInput): Promise<Invite>;
+  /** GET /api/v1/teams/{team_id}/invites（owner/admin） */
+  listInvites(token: string, teamId: ID): Promise<Page<Invite>>;
+  /** DELETE /api/v1/teams/{team_id}/invites/{invite_id}（owner/admin，作废） */
+  revokeInvite(token: string, teamId: ID, inviteId: ID): Promise<void>;
+
   /** GET /api/v1/attachments/{id}：刷新单个签名 URL */
   getAttachmentUrl(token: string, attachmentId: ID): Promise<AttachmentUrl>;
   /** POST /api/v1/attachments/urls {ids}（≤100）：批量刷新签名 URL */

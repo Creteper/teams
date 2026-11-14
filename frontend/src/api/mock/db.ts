@@ -1,4 +1,4 @@
-import type { Attachment, Channel, Member, Message, ServerFrame, Team, User } from "../types";
+import type { Attachment, Channel, Invite, Member, Message, ServerFrame, Team, User } from "../types";
 
 /**
  * Mock 内存数据库（刷新即重置），数据形状与 docs/api.md 一致。
@@ -26,6 +26,7 @@ export interface MockDb {
   usedAttachments: Set<string>;
   /** 事件总线；audience 用于模拟“只发给某人 / 发给除某人外” */
   listeners: Set<(frame: ServerFrame, audience?: Audience) => void>;
+  invites: Invite[];
   /** client_msg_id 幂等：`${member_id}:${client_msg_id}` -> message id */
   clientMsgIds: Map<string, string>;
   seq: number;
@@ -108,6 +109,10 @@ export const IDS = {
   uDave: mockUuid(4),
   tDev: mockUuid(11),
   tDesign: mockUuid(12),
+  tOpen: mockUuid(13),
+  mCarolOpen: mockUuid(29),
+  mHelperOpen: mockUuid(30),
+  cOpenGeneral: mockUuid(46),
   // team 内 member_id
   mAlice: mockUuid(21),
   mBob: mockUuid(22),
@@ -165,6 +170,14 @@ export function createMockDb(): MockDb {
       icon_url: teamIcon("#eb459e", "设"),
       owner_user_id: IDS.uBob,
       created_at: iso(60 * 24 * 3),
+    },
+    {
+      id: IDS.tOpen,
+      name: "Open Lab",
+      description: "开放实验室，凭邀请链接加入",
+      icon_url: teamIcon("#23a55a", "OL"),
+      owner_user_id: IDS.uCarol,
+      created_at: iso(60 * 24 * 2),
     },
   ];
 
@@ -248,6 +261,21 @@ export function createMockDb(): MockDb {
     },
     um(IDS.mBobDesign, IDS.tDesign, users[1], "owner"),
     um(IDS.mAliceDesign, IDS.tDesign, users[0], "member"),
+    um(IDS.mCarolOpen, IDS.tOpen, users[2], "owner"),
+    {
+      id: IDS.mHelperOpen,
+      team_id: IDS.tOpen,
+      type: "bot",
+      user_id: null,
+      bot_id: mockUuid(37),
+      display_name: "LabBot",
+      username: "labbot",
+      avatar_url: null,
+      avatar_shape: "flower",
+      avatar_color: "green",
+      role: "bot",
+      joined_at: iso(60 * 24 * 2),
+    },
   ];
 
   const ch = (id: string, teamId: string, name: string, topic: string, by: string): Channel => ({
@@ -265,6 +293,7 @@ export function createMockDb(): MockDb {
     ch(IDS.cBackend, IDS.tDev, "backend", "后端开发", IDS.mBob),
     ch(IDS.cRandom, IDS.tDev, "random", "", IDS.mBob),
     ch(IDS.cDesignGeneral, IDS.tDesign, "general", "", IDS.mBobDesign),
+    ch(IDS.cOpenGeneral, IDS.tOpen, "general", "欢迎新成员", IDS.mCarolOpen),
   ];
 
   const img: Attachment = {
@@ -339,7 +368,38 @@ export function createMockDb(): MockDb {
     c.last_message_seq = Math.max(0, ...messages.filter((m) => m.channel_id === c.id).map((m) => m.seq));
   }
 
+  const inv = (
+    n: number,
+    code: string,
+    teamId: string,
+    createdBy: string,
+    extra: Partial<Invite>,
+  ): Invite => ({
+    id: mockUuid(n),
+    code,
+    team_id: teamId,
+    url_path: `/invite/${code}`,
+    expires_at: null,
+    max_uses: null,
+    uses: 0,
+    revoked_at: null,
+    created_by: createdBy,
+    created_at: iso(60 * 24),
+    ...extra,
+  });
+  const inFuture = (min: number) => new Date(now + min * 60_000).toISOString();
+  // 演示用邀请：有效 / 过期 / 作废 / 次数用尽
+  const invites: Invite[] = [
+    inv(61, "OpenLab8", IDS.tOpen, IDS.mCarolOpen, { uses: 3 }),
+    inv(62, "Expired1", IDS.tOpen, IDS.mCarolOpen, { expires_at: iso(30) }),
+    inv(63, "Revoked1", IDS.tOpen, IDS.mCarolOpen, { revoked_at: iso(60) }),
+    inv(64, "UsedUp01", IDS.tOpen, IDS.mCarolOpen, { max_uses: 1, uses: 1 }),
+    inv(65, "DevTeam7", IDS.tDev, IDS.mAlice, { expires_at: inFuture(7 * 24 * 60 - 90), max_uses: 10, uses: 2 }),
+    inv(66, "DevOld01", IDS.tDev, IDS.mAlice, { revoked_at: iso(120), created_at: iso(60 * 24 * 3) }),
+  ];
+
   return {
+    invites,
     users: new Map(users.map((u) => [u.id, u])),
     sessions: new Map(),
     teams: new Map(teams.map((t) => [t.id, t])),

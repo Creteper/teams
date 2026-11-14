@@ -12,6 +12,7 @@ export function ChannelSidebar({
   me,
   onCreateChannel,
   onLogout,
+  onInvite,
 }: {
   team: Team | null;
   channels: Channel[];
@@ -19,7 +20,10 @@ export function ChannelSidebar({
   me: User;
   onCreateChannel(name: string): Promise<void>;
   onLogout(): void;
+  /** owner/admin 才传，打开邀请弹窗 */
+  onInvite?: () => void;
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -37,12 +41,36 @@ export function ChannelSidebar({
 
   return (
     <aside className="flex w-60 shrink-0 flex-col bg-[#2b2d31]">
-      <div
-        className="flex h-12 items-center justify-between border-b border-black/30 px-4 font-semibold text-[#f2f3f5]"
-        title={team?.description || team?.name}
-      >
-        <span className="truncate">{team?.name ?? "…"}</span>
-        {team ? <span className="text-xs font-normal text-[#949ba4]">{team.my_role}</span> : null}
+      <div className="relative">
+        <button
+          type="button"
+          onClick={() => setMenuOpen((v) => !v)}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          className="flex h-12 w-full items-center justify-between border-b border-black/30 px-4 text-left font-semibold text-[#f2f3f5] hover:bg-[#35373c]"
+          title={team?.description || team?.name}
+        >
+          <span className="truncate">{team?.name ?? "…"}</span>
+          <span className="text-xs text-[#b5bac1]">{menuOpen ? "✕" : "▾"}</span>
+        </button>
+        {menuOpen ? (
+          <div role="menu" className="absolute left-2 right-2 top-[52px] z-30 rounded-md bg-[#111214] p-1.5 shadow-xl">
+            {onInvite ? (
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  onInvite();
+                }}
+                className="w-full rounded px-2 py-1.5 text-left text-sm text-[#949cf7] hover:bg-[#5865f2] hover:text-white"
+              >
+                邀请成员
+              </button>
+            ) : null}
+            <div className="px-2 py-1.5 text-xs text-[#949ba4]">我的角色：{team?.my_role ?? "-"}</div>
+          </div>
+        ) : null}
       </div>
 
       <div className="flex-1 overflow-y-auto px-2 pt-4">
