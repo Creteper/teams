@@ -54,7 +54,7 @@ export function GifAvatarDialog({
         ) : (
           <div className="h-40 w-40 shrink-0 rounded-full bg-[#1e1f22]" />
         )}
-        <div className="flex flex-col items-center gap-3">
+        <div className="flex items-end gap-4" data-testid="gif-preview-small">
           {url ? (
             <>
               <img src={url} alt="动图头像预览（中）" className="h-16 w-16 rounded-full object-cover object-center" />

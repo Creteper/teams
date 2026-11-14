@@ -84,8 +84,9 @@ export function PushSettings({ token, userId }: { token: string; userId: string 
       ) : (
         <>
           <Switch isSelected={phase.on} isDisabled={pending} onChange={(v) => void toggle(v)} data-testid="push-switch">
-            <Switch.Content>
-              <Switch.Control>
+            <Switch.Content className="gap-2">
+              {/* 未选中轨道用 Discord 的灰 #4e5058，和卡片背景拉开对比；选中时的紫色轨道沿用主题 */}
+              <Switch.Control className="[--switch-control-bg-hover:#5c5e66] [--switch-control-bg-pressed:#5c5e66] [--switch-control-bg:#4e5058]">
                 <Switch.Thumb />
               </Switch.Control>
               <Label className="text-sm text-[#dbdee1]">开启 @ 消息通知</Label>
@@ -105,7 +106,7 @@ export function PushSettings({ token, userId }: { token: string; userId: string 
       ) : null}
       {notice ? <p className="mt-2 text-xs text-[#57f287]">{notice}</p> : null}
       {/* 错误提示里已带 Chrome 国内提示时不再重复 */}
-      <p className="mt-2 text-[11px] leading-snug text-[#949ba4]">只在有人 @ 你时通知。{error?.includes(CHROME_GFW_HINT) ? "" : CHROME_GFW_HINT}</p>
+      <p className="mt-2 text-[11px] leading-snug text-[#949ba4]">只在有人 @ 你时通知，切换后立即生效（不受下方「保存 / 取消」控制）。{error?.includes(CHROME_GFW_HINT) ? "" : CHROME_GFW_HINT}</p>
     </section>
   );
 }

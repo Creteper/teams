@@ -3,7 +3,7 @@ import { Link } from "react-router";
 import { Button, Input } from "@heroui/react";
 import type { Channel, Team, User } from "../api/types";
 import { MemberAvatar } from "./MemberAvatar";
-import { GearIcon, MenuItem, PopMenu } from "./ui";
+import { GearIcon, MenuItem, PinIcon, PopMenu } from "./ui";
 import { RowActionsMenu } from "./RowActionsMenu";
 import { CHANNEL_ACTION_TEXT, channelActions, type ChannelAction } from "../lib/channels";
 import { sortChannels, unreadLabel, type UnreadMap } from "../lib/unread";
@@ -110,11 +110,6 @@ export function ChannelSidebar({
         >
           <span className="text-xl leading-none text-[#80848e]">#</span>
           <span className={`truncate ${hasUnread ? "font-semibold" : ""}`}>{c.name}</span>
-          {isPinned ? (
-            <span aria-hidden="true" title="已置顶" className="shrink-0 text-[11px] text-[#949ba4]" data-testid="pin-icon">
-              📌
-            </span>
-          ) : null}
         </Link>
         {hasUnread ? <UnreadBadge count={count} mention={mention} /> : null}
         <RowActionsMenu
@@ -184,8 +179,9 @@ export function ChannelSidebar({
       <div className="flex-1 overflow-y-auto px-2 pt-4">
         {pinned.length > 0 ? (
           <>
-            <div className="mb-1 px-1 text-xs font-semibold uppercase tracking-wide text-[#949ba4]" data-testid="pinned-heading">
-              📌 置顶
+            <div className="mb-1 flex items-center gap-1 px-1 text-xs font-semibold uppercase tracking-wide text-[#949ba4]" data-testid="pinned-heading">
+              <PinIcon size={12} />
+              <span>置顶</span>
             </div>
             <ul className="mb-3 flex flex-col gap-0.5" aria-label="置顶频道" data-testid="pinned-list">
               {pinned.map(renderRow)}

@@ -36,6 +36,10 @@ describe("PushSettings", () => {
     render(<PushSettings token="t" userId="u" />);
     expect(await screen.findByText("开启 @ 消息通知")).toBeTruthy();
     expect(screen.getByTestId("push-denied").textContent).toContain("通知权限已被拒绝");
+    // 未选中轨道有可见底色（#4e5058），说明里写明立即生效
+    const control = document.querySelector('[data-slot="switch-control"]') as HTMLElement;
+    expect(control.className).toContain("[--switch-control-bg:#4e5058]");
+    expect(screen.getByText(/切换后立即生效/)).toBeTruthy();
     // @ts-expect-error 测试清理
     delete navigator.serviceWorker;
   });

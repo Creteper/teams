@@ -19,6 +19,11 @@ describe("GifAvatarDialog（动图头像不裁剪、不转码）", () => {
     expect(big.className).toContain("object-center");
     expect(document.querySelector("canvas")).toBeNull();
     expect(screen.getByTestId("gif-center-hint").textContent).toContain("动图会居中裁切显示");
+    // 两个小预览左右排（和静态图裁剪弹窗一致）
+    const small = screen.getByTestId("gif-preview-small");
+    expect(small.className).toContain("flex");
+    expect(small.className).not.toContain("flex-col");
+    expect(small.querySelectorAll("img")).toHaveLength(2);
   });
   it("确认 → onConfirm；失败显示错误", async () => {
     const onConfirm = vi.fn(async () => {

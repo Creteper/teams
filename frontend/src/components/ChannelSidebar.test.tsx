@@ -86,12 +86,15 @@ describe("未读与置顶", () => {
     expect(row("g").dataset.unread).toBeUndefined();
     expect(row("g").querySelector('[data-testid="unread-badge"]')).toBeNull();
   });
-  it("置顶频道单独成组排在最前，带 📌，菜单是「取消置顶」", async () => {
+  it("置顶频道单独成组排在最前（标题是灰色线性图钉，行内不再有 emoji），菜单是「取消置顶」", async () => {
     setup("member", "m", vi.fn(), { unread });
     expect(screen.getByTestId("pinned-heading").textContent).toContain("置顶");
     const pinned = screen.getByTestId("pinned-list");
     expect([...pinned.querySelectorAll("li[data-channel-id]")].map((li) => li.getAttribute("data-channel-id"))).toEqual(["r"]);
-    expect(pinned.querySelector('[data-testid="pin-icon"]')).toBeTruthy();
+    const heading = screen.getByTestId("pinned-heading");
+    expect(heading.querySelector("svg")?.getAttribute("stroke")).toBe("currentColor");
+    expect(heading.textContent).toBe("置顶");
+    expect(document.body.textContent).not.toContain("📌");
     fireEvent.contextMenu(screen.getByText("random"));
     const items = await screen.findAllByRole("menuitem");
     expect(items.map((i) => i.textContent)).toEqual(["取消置顶"]);
