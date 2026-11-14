@@ -100,7 +100,11 @@
 { "id": "…", "username": "creteper", "display_name": "Creteper", "avatar_url": "/api/v1/avatars/<avatar_id>", "created_at": "…" }
 ```
 - `PATCH /api/v1/me` `{ "display_name": "…" }` → User；推送 `member.updated` 到该用户所在每个 team。
-- `PUT /api/v1/me/avatar`（multipart 字段 `file`）/ `DELETE /api/v1/me/avatar` → User，见 §10。
+- `PUT /api/v1/me/avatar`（multipart 字段 `file`）/ `DELETE /api/v1/me/avatar` → 200 User（仅用户会话），格式和限制见 §10.1。
+  - 上传成功后推送 `member.updated`（新的 `avatar_url`）到该用户所在每个 team，与改昵称相同。
+  - `DELETE` 是幂等的：本来就没有头像也返回 200 User（`avatar_url: null`），这种情况**不推送**；真的清除了才推 `member.updated`（`avatar_url: null`）。
+  - 错误：不是 multipart → 415；multipart 里没有 `file` 字段（字段名必须是 `file`）→ 400 `validation_failed`（`details.field: "file"`）；文件为空 → 400（`field: "avatar"`）；超过大小上限 → 413 `payload_too_large`；格式不对或图片解不开 → 415 `unsupported_media_type`；宽或高超过 4096 → 400 `validation_failed`（`field: "avatar"`，直接拒绝，不缩放）。
+  - 被替换 / 清除的旧头像文件约 1 小时后由后台清理删除；旧 URL 届时 404。
 
 ---
 
@@ -138,7 +142,7 @@ Team 对象：
 | GET | `/api/v1/teams/{team_id}/members` | 成员（含 bot） | `?type=user|bot&limit=&cursor=`；按 member id（≈加入时间）升序 |
 | POST | `/api/v1/teams/{team_id}/members` | owner/admin | 按用户名添加：`{ "username": "tina", "role": "member" }`（role 可为 `member`/`admin`）→ 201 Member；已是成员 → 409 |
 | GET | `/api/v1/teams/{team_id}/members/{member_id}` | 成员（含 bot） | 单个成员资料（"查看资料"用）→ 200 Member；已退出的成员 / 已删除的 bot 也能查到（`deleted: true`），便于从旧消息点开；不是本 team 的成员或 id 无效 → 404 |
-| PATCH | `/api/v1/teams/{team_id}/members/{member_id}` | owner/admin | `{ "role": "admin"|"member" }`；不能改 owner 和 bot |
+| PATCH | `/api/v1/teams/{team_id}/members/{member_id}` | owner/admin（用户会话） | `{ "role": "admin"|"member" }` → 200 Member；不能改 owner 和 bot，规则见下 |
 | DELETE | `/api/v1/teams/{team_id}/members/{member_id}` | owner/admin，或本人 | 移除 → 204；owner 不能被移除（403），owner 移除自己 → 409 `owner_cannot_leave`；bot 请用 `DELETE /bots/{id}` |
 | DELETE | `/api/v1/teams/{team_id}/members/me` | 本人（用户） | 退出 team → 204；owner → **409 `owner_cannot_leave`** |
 
@@ -150,6 +154,23 @@ Member 对象：
 ```
 bot 成员：`"type": "bot"`, `"bot_id": "…"`, `"user_id": null`, `"role": "bot"`，`username` 为 bot 的 `name`，`description` 为 bot 的描述（用户成员恒为 `null`），`avatar_shape` / `avatar_color` 见 §8.2。
 所有返回 Member 的地方（列表、单个、`member.*` 事件）都带 `description`。已退出 / 已删除的成员只会在单个查询里出现，并带 `"deleted": true`。
+
+**修改角色（`PATCH /teams/{team_id}/members/{member_id}`）**：
+
+| 调用者 | 目标 | 结果 |
+|---|---|---|
+| owner | admin / member（用户） | 200，可升可降 |
+| admin | 其他 admin / member（用户） | 200，**可以把其他 admin 降为 member**，也可以把 member 升为 admin |
+| admin | 自己 | 200，可以把自己降为 member（降完就失去管理权限，不能自己再升回去） |
+| owner | 自己 | 403 `forbidden`（owner 的角色不能改；转让 owner 目前没有接口） |
+| owner / admin | owner 或 bot 成员 | 403 `forbidden`「不能修改 owner 或 bot 的角色」 |
+| member | 任何人 | 403 `forbidden`「需要 owner 或 admin」 |
+| bot 令牌 | — | 403（仅用户会话） |
+
+- `role` 只能是 `"admin"` 或 `"member"`（区分大小写；`"owner"`、`"bot"`、空串都不行）→ 否则 400 `validation_failed`，`details.field: "role"`。目标是 owner/bot 时先返回 403，不再校验 role。
+- 目标成员不存在、id 无效、不在本 team、已退出 → 404 `not_found`；调用者不是该 team 成员 → 404。
+- 没有 409：设成和现在相同的角色也返回 200（当前 Member），但**不写库、不推送**。
+- 角色真的变了才推送 `member.updated`（新的 Member）给整个 team，**包括被改的人自己**，前端据此刷新自己的权限（`team.my_role` 不会单独推 `team.updated`）。
 
 **推送规则**（按用户名添加与接受邀请一致）：
 - 加入：被加入的用户本人连接收到 `team.joined`（完整 Team 对象），并自动订阅该 team；team 里其他人收到 `member.joined`（本人不收）。
@@ -211,13 +232,29 @@ team 成员（用户和 bot）可在任意频道读写，无需加入频道。
 | GET | `/api/v1/teams/{team_id}/channels` | 成员（含 bot），列表信封，默认频道在前 |
 | POST | `/api/v1/teams/{team_id}/channels` | 用户成员（bot 不可）`{ "name": "backend", "topic": "" }` → 201，推送 `channel.created` |
 | GET | `/api/v1/channels/{channel_id}` | 成员 |
-| PATCH | `/api/v1/channels/{channel_id}` | owner/admin/创建者，`{name?, topic?}`，推送 `channel.updated` |
-| DELETE | `/api/v1/channels/{channel_id}` | owner/admin；默认频道不能删（403）→ 204，推送 `channel.deleted` |
+| PATCH | `/api/v1/channels/{channel_id}` | owner/admin/创建者（用户会话），`{name?, topic?}` → 200 Channel，推送 `channel.updated` |
+| DELETE | `/api/v1/channels/{channel_id}` | owner/admin（用户会话）；默认频道不能删（403）→ 204，推送 `channel.deleted` |
 | POST | `/api/v1/channels/{channel_id}/read` | 用户会话（bot 403）；标记已读，见 §5.7 |
 | PUT / DELETE | `/api/v1/channels/{channel_id}/pin` | 用户会话（bot 403）；置顶 / 取消置顶（只影响自己），见 §5.7 |
 | GET | `/api/v1/me/unread` | 用户会话；所有 team 里有未读的频道汇总，见 §5.7 |
 
-`name` 1–64 字符，team 内不区分大小写唯一（409）；`topic` ≤ 250。
+**名称规则**（创建和改名相同）：
+- 先去掉首尾空白（`TrimSpace`），再按字符（Unicode 码点，不是字节）计 1–64；中文、空格、`#`、emoji、标点都允许，**只禁止控制字符**（换行、制表符等）→ 否则 400 `validation_failed`，`details.field: "name"`。
+- team 内**不区分大小写**唯一，只和未删除的频道比较（删掉的频道名可以再用）；把自己改成仅大小写不同的名字可以。重名 → 409 `conflict`「频道名已存在」，`details.field: "name"`。
+- `topic` 去首尾空白后 ≤ 250 字符，可为空，同样禁止控制字符（`field: "topic"`）。
+- `PATCH` 只改传了的字段；即使什么都没改也返回 200 并推送 `channel.updated`。
+
+**权限**：
+
+| 操作 | owner | admin | 频道创建者（member） | 其他 member | bot 令牌 |
+|---|---|---|---|---|---|
+| 改名 / 改 topic（含默认频道） | ✓ | ✓ | ✓（仅自己建的） | 403 | 403 |
+| 删除普通频道 | ✓ | ✓ | 403 | 403 | 403 |
+| 删除默认频道 | 403「默认频道不能删除」 | 403 | 403 | 403 | 403 |
+
+默认频道（`is_default: true`）**可以改名**，改名后仍是默认频道，只是不能删。
+
+**删除是软删除**：频道记 `deleted_at`，消息和附件记录留在库里但**不再可访问**——频道、它的消息列表、单条消息、编辑/删除/decline 都 → 404；这些消息的附件 `GET /attachments/{id}`、`/content`（含之前签发的签名 URL）→ 404，`POST /attachments/urls` 把它们放进 `missing`；附件文件本身不立即删除。还没发出的 webhook 投递会被放弃；未读汇总里不再出现该频道。只推送一条 `channel.deleted`（`data: {id}`）给整个 team，不逐条推 `message.deleted`；前端收到后从列表移除，若正在看该频道应跳走（例如回默认频道）。目前没有恢复接口。
 
 Channel 对象：
 ```json
@@ -617,7 +654,7 @@ JSON：
 | `channel.created` / `channel.updated` | Channel | team |
 | `channel.deleted` | `{id}` | team |
 | `member.joined` | Member | team（加入者本人除外） |
-| `member.updated` | Member | team（改昵称/头像/bot 资料） |
+| `member.updated` | Member | team，含本人（改昵称、上传/清除头像、bot 资料变化、角色变化；清除时本来就没头像、或角色设成原值时不推） |
 | `member.left` | `{member_id}` | team（离开者本人除外） |
 | `team.joined` | Team（含 my_member_id / my_role） | **仅**被加入的用户，之后自动订阅 |
 | `team.updated` | Team | team |
@@ -662,7 +699,9 @@ Service Worker 收到的 JSON（解密后）：
 
 ### 10.1 上传
 - 用户：`PUT /api/v1/me/avatar`；Team：`PUT /api/v1/teams/{id}/icon`；Bot：`PUT /api/v1/bots/{id}/avatar`、`PUT /api/v1/bots/me/avatar`；multipart 字段 `file`。
-- 只接受 jpeg / png / gif / webp（嗅探），≤ 5 MB（`TEAMS_MAX_AVATAR_BYTES`），宽高 ≤ 4096。服务端**不裁剪不缩放**。
+- 只接受 jpeg / png / gif / webp（按文件内容嗅探，不看扩展名和 Content-Type），≤ 5 MB（默认值，`TEAMS_MAX_AVATAR_BYTES`），宽、高各 ≤ 4096 像素。服务端**不裁剪不缩放**，超过 4096 直接拒绝（前端如需支持大图，先在浏览器里缩放再上传）。
+- 错误码：不是 `multipart/form-data` → 415；缺 `file` 字段 → 400 `validation_failed`（`field: "file"`）；空文件 → 400（`field: "avatar"`）；超过大小上限 → 413 `payload_too_large`（`details.max_bytes`）；不是上述格式 / 解不开 → 415 `unsupported_media_type`；宽或高 > 4096 → 400 `validation_failed`（`field: "avatar"`，「图片尺寸不能超过 4096×4096」）。
+- 用户头像改动后推 `member.updated`（§1、§9.3）；`DELETE` 没有头像时也返回 200。
 - `GET /api/v1/avatars/{avatar_id}`：**公开**、`Cache-Control: public, max-age=31536000, immutable`；每次更换都生成新 id，所以 URL 变化即刷新。
 
 ### 10.2 远程头像（bot 的 `avatar_url`）
@@ -738,3 +777,6 @@ IP 取连接地址；只有来自本机回环的请求（即 Caddy 反代）才�
 29. **浏览器推送**（§9.4）：新增 `GET /push/vapid-public-key`、`POST / DELETE /push/subscriptions`；只在被 @ 时推送（自己 @ 自己、bot、编辑不推）；订阅绑定登录会话，退出登录即删除；404/410 自动清理。新增环境变量 `TEAMS_VAPID_PUBLIC_KEY`、`TEAMS_VAPID_PRIVATE_KEY`、`TEAMS_VAPID_SUBJECT`（§13）。迁移 `0005_push_subscriptions.sql`。
 30. **成员资料**：新增 `GET /teams/{team_id}/members/{member_id}`（含已退出成员，`deleted: true`）；Member 对象新增 `description`（bot 的描述，用户为 null）。
 31. **Bot 声明不回复**（§7.7）：新增 `POST /messages/{id}/decline`（仅 bot 令牌）；消息对象新增 `kind`（`message` / `bot_declined`）；运行状态新增终态 `declined` 和事件 `bot.run.declined`；webhook payload 的 `reply` 末尾新增 `decline` 提示（其它字段与顺序不变）；`bot_declined` 消息不能编辑。迁移 `0006_bot_decline.sql`。
+32. **修改成员角色时角色没变不再推送**（§3）：`PATCH /teams/{team_id}/members/{member_id}` 设成和当前相同的角色仍返回 200 Member，但不再写库、不再推 `member.updated`（之前每次都推）。其它规则不变，并补全了权限表：admin 可以升降其他 admin、可以把自己降为 member；owner 改自己或改 bot → 403；role 非法 → 400 `field: "role"`；成员不存在 → 404；没有 409。
+33. **删除频道后，其消息的附件也不能再访问**（§5.1）：之前频道删掉后，附件仍能通过 `GET /attachments/{id}`、`/content`、签名 URL、`POST /attachments/urls` 取到；现在与频道内消息一致返回 404 / 放进 `missing`。
+34. **文档补充（行为未变）**：频道名规则（去首尾空白、1–64 字符、只禁控制字符、不区分大小写唯一、409 `field: "name"`）、频道改名/删除权限表（默认频道可改名不可删、创建者可改名不可删）、软删除细节（§5.1）；`/me/avatar` 的 `member.updated` 推送、`DELETE` 幂等、字段名 `file`、各错误码、超过 4096 直接拒绝不缩放（§1、§10.1）；`member.updated` 的触发场景（§9.3）。

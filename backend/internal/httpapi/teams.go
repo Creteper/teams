@@ -556,6 +556,10 @@ func (s *Server) patchMember(w http.ResponseWriter, r *http.Request) error {
 	if body.Role != "member" && body.Role != "admin" {
 		return apierr.Validation("role", "role 只能是 member 或 admin")
 	}
+	if m.Role == body.Role {
+		// no change: 200 with the current member, no member.updated
+		return writeJSON(w, http.StatusOK, m)
+	}
 	ctx := r.Context()
 	if _, err := s.pool.Exec(ctx, `UPDATE team_members SET role=$2 WHERE id=$1`, m.ID, body.Role); err != nil {
 		return err

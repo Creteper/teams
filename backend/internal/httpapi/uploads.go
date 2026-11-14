@@ -158,7 +158,8 @@ func (s *Server) attachmentContent(w http.ResponseWriter, r *http.Request) error
 	ctx := r.Context()
 	var teamID, mt, name, key string
 	err = s.pool.QueryRow(ctx, `SELECT a.team_id, a.mime_type, a.file_name, a.storage_key FROM attachments a
-		LEFT JOIN messages m ON m.id=a.message_id WHERE a.id=$1 AND m.deleted_at IS NULL`, id).Scan(&teamID, &mt, &name, &key)
+		LEFT JOIN messages m ON m.id=a.message_id LEFT JOIN channels c ON c.id=m.channel_id
+		WHERE a.id=$1 AND m.deleted_at IS NULL AND c.deleted_at IS NULL`, id).Scan(&teamID, &mt, &name, &key)
 	if err != nil {
 		return apierr.NotFound("附件")
 	}
@@ -501,7 +502,8 @@ func (s *Server) attachmentURLs(w http.ResponseWriter, r *http.Request) error {
 }
 
 // attachmentsFor returns attachments the principal can see (team member,
-// not attached to a deleted message), in the order of ids.
+// not attached to a deleted message or a message in a deleted channel), in
+// the order of ids.
 func (s *Server) attachmentsFor(ctx context.Context, p *principal, ids []string) ([]attachmentView, error) {
 	var teamFilter string
 	args := []any{ids}
@@ -514,8 +516,8 @@ func (s *Server) attachmentsFor(ctx context.Context, p *principal, ids []string)
 		args = append(args, p.UserID)
 	}
 	rows, err := s.pool.Query(ctx, `SELECT a.id, a.message_id, a.kind, a.mime_type, a.size_bytes, a.file_name, a.width, a.height, a.duration_ms
-		FROM attachments a LEFT JOIN messages m ON m.id=a.message_id
-		WHERE a.id = ANY($1::uuid[]) AND m.deleted_at IS NULL AND `+teamFilter, args...)
+		FROM attachments a LEFT JOIN messages m ON m.id=a.message_id LEFT JOIN channels c ON c.id=m.channel_id
+		WHERE a.id = ANY($1::uuid[]) AND m.deleted_at IS NULL AND c.deleted_at IS NULL AND `+teamFilter, args...)
 	if err != nil {
 		return nil, err
 	}
