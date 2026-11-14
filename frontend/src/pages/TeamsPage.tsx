@@ -4,6 +4,7 @@ import { CreateTeamForm } from "../components/TeamForms";
 import { TeamRail } from "../components/TeamRail";
 import { initials } from "../components/MemberAvatar";
 import { useTeams } from "../hooks";
+import { LogoWordmark } from "../components/Logo";
 
 /** Team 列表 + 创建 / 加入 */
 export default function TeamsPage() {
@@ -18,7 +19,10 @@ export default function TeamsPage() {
       <main className="flex-1 overflow-y-auto p-8">
         <div className="mx-auto max-w-4xl">
           <div className="mb-6 flex items-center justify-between">
-            <h1 className="text-2xl font-bold text-white">你好，{user?.display_name}</h1>
+            <div className="flex items-center gap-4">
+              <LogoWordmark size={36} />
+              <h1 className="text-2xl font-bold text-white">你好，{user?.display_name}</h1>
+            </div>
             <button type="button" onClick={() => void logout()} className="text-sm text-[#b5bac1] hover:text-white">
               退出登录
             </button>

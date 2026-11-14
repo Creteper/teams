@@ -5,6 +5,7 @@ import { api, ApiError } from "../api";
 import type { InviteInvalidReason, InvitePreview } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
 import { initials } from "../components/MemberAvatar";
+import { LogoWordmark } from "../components/Logo";
 import { INVITE_REASON_HINT, reasonFromErrorCode, withRedirect } from "../lib/invite";
 
 /** 邀请落地页 /invite/:code：未登录也能预览 */
@@ -62,7 +63,10 @@ export default function InvitePage() {
 
   const team = preview?.team;
   return (
-    <div className="flex min-h-full items-center justify-center bg-[#313338] bg-[radial-gradient(circle_at_20%_20%,#5865f233,transparent_40%),radial-gradient(circle_at_80%_80%,#23a55a22,transparent_40%)] p-6">
+    <div className="relative flex min-h-full items-center justify-center bg-[#313338] bg-[radial-gradient(circle_at_20%_20%,#5865f233,transparent_40%),radial-gradient(circle_at_80%_80%,#23a55a22,transparent_40%)] p-6">
+      <div className="absolute left-6 top-5">
+        <LogoWordmark size={32} />
+      </div>
       <Card className="w-full max-w-md bg-[#2b2d31] p-2 text-center">
         {loading ? (
           <Card.Content className="flex justify-center py-10">

@@ -1,17 +1,16 @@
 import { Link } from "react-router";
 import type { Team } from "../api/types";
 import { initials } from "./MemberAvatar";
+import { Logo } from "./Logo";
 
 /** 最左侧竖排 team 图标栏（圆形图标，选中为圆角方块 + 左侧指示条） */
 export function TeamRail({ teams, currentTeamId, onAdd }: { teams: Team[]; currentTeamId?: string; onAdd(): void }) {
   return (
     <nav aria-label="Teams" className="flex w-[72px] shrink-0 flex-col items-center gap-2 overflow-y-auto bg-[#1e1f22] py-3">
-      <Link
-        to="/teams"
-        title="TeAms"
-        className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#5865f2] text-sm font-black tracking-tight text-white"
-      >
-        TA
+      {/* 主页按钮：TeAms LOGO，点击回到 team 列表 */}
+      <Link to="/teams" title="TeAms · 我的 Team" aria-label="TeAms 主页" className="group relative flex w-full justify-center">
+        <span className="absolute left-0 top-1/2 h-0 w-1 -translate-y-1/2 rounded-r bg-white transition-all group-hover:h-5" />
+        <Logo size={48} className="transition-transform group-hover:scale-105" />
       </Link>
       <div className="h-[2px] w-8 rounded bg-[#35363c]" />
       {teams.map((t) => {
