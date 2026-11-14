@@ -31,7 +31,20 @@ describe("成员列表：设为 / 取消管理员入口", () => {
   it("管理员成员的菜单是「取消管理员」", async () => {
     render(<MemberList members={members} roles={{ myRole: "owner", myMemberId: "o", onAction: () => {} }} />);
     fireEvent.contextMenu(screen.getByText("Bob"));
-    expect(await screen.findByRole("menuitem", { name: "取消管理员" })).toBeTruthy();
+    const item = await screen.findByRole("menuitem", { name: "取消管理员" });
+    // 危险色：菜单项是 danger 变体，文字放在 data-slot=label 里（HeroUI 只给 label 上红色）
+    expect(item.className).toContain("menu-item--danger");
+    const label = item.querySelector('[data-slot="label"]');
+    expect(label?.textContent).toBe("取消管理员");
+    expect(label?.className).toContain("text-danger");
+  });
+  it("「⋯」桌面端悬停才出现，触屏（pointer-coarse / hover:none）一直显示", () => {
+    render(<MemberList members={members} roles={{ myRole: "owner", myMemberId: "o", onAction: () => {} }} />);
+    const cls = screen.getByLabelText("Carol 的成员操作").className;
+    expect(cls).toContain("opacity-0");
+    expect(cls).toContain("group-hover:opacity-100");
+    expect(cls).toContain("pointer-coarse:opacity-100");
+    expect(cls).toContain("[@media(hover:none)]:opacity-100");
   });
   it("点了菜单项后角色立刻变化（乐观更新/推送）不会让菜单报错，新菜单变成「取消管理员」", async () => {
     const errors: unknown[] = [];

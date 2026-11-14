@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Dropdown } from "@heroui/react";
+import { Dropdown, Label } from "@heroui/react";
 import type { Member } from "../api/types";
 import { roleLabel } from "../lib/roles";
 import { ROLE_ACTION_TEXT, roleActionFor, type RoleAction } from "../lib/memberRoles";
@@ -107,16 +107,22 @@ function Group({ title, items, roles }: { title: string; items: Member[]; roles?
                   <Dropdown.Trigger
                     aria-label={`${m.display_name} 的成员操作`}
                     isDisabled={roles.pendingId === m.id}
+                    // 桌面端悬停/键盘聚焦才出现；触屏（无 hover 或粗指针）一直显示
+                    data-testid="member-actions"
                     className={`ml-auto flex h-6 w-6 shrink-0 items-center justify-center rounded text-[#b5bac1] outline-none hover:bg-[#404249] hover:text-white focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-brand ${
-                      open ? "opacity-100" : "opacity-0 group-hover:opacity-100"
+                      open
+                        ? "opacity-100"
+                        : "opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 pointer-coarse:opacity-100 [@media(hover:none)]:opacity-100"
                     }`}
                   >
                     ⋯
                   </Dropdown.Trigger>
-                  <Dropdown.Popover placement="bottom end" className="min-w-40">
-                    <Dropdown.Menu aria-label={`${m.display_name} 的成员操作`} onAction={() => roles.onAction(m, action)}>
-                      <Dropdown.Item id="toggle-role" textValue={ROLE_ACTION_TEXT[action]} variant={action === "demote" ? "danger" : "default"}>
-                        {ROLE_ACTION_TEXT[action]}
+                  {/* 贴着「⋯」向左弹出、与按钮垂直居中：菜单高度不超过一行，不压住上下相邻成员 */}
+                  <Dropdown.Popover placement="left" offset={6} className="min-w-36">
+                    <Dropdown.Menu className="p-1" aria-label={`${m.display_name} 的成员操作`} onAction={() => roles.onAction(m, action)}>
+                      <Dropdown.Item id="toggle-role" className="min-h-8" textValue={ROLE_ACTION_TEXT[action]} variant={action === "demote" ? "danger" : "default"}>
+                        {/* HeroUI 的 danger 变体只给 [data-slot=label] 上色，纯文本子节点会继承白字，所以必须包 Label */}
+                        <Label className={action === "demote" ? "text-danger" : undefined}>{ROLE_ACTION_TEXT[action]}</Label>
                       </Dropdown.Item>
                     </Dropdown.Menu>
                   </Dropdown.Popover>
