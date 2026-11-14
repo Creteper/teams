@@ -171,10 +171,12 @@ const FAIL_TEXT: Record<string, string> = {
 export function botRunText(run: BotRun, botName: string, opts: { technical?: boolean } = {}): string {
   const technical = opts.technical ?? true;
   switch (run.phase) {
+    // started = 投递入队、webhook 还没送达（§7.6）：连接中；delivered = webhook 返回 2xx：bot 已收到，正在输入
     case "optimistic":
     case "started":
+      return `${botName} 正在连接…`;
     case "delivered":
-      return `${botName} 正在处理…`;
+      return `${botName} 正在输入…`;
     case "retrying":
       return `${botName} 正在重试…${run.attempt ? `（第 ${run.attempt} 次）` : ""}`;
     case "timeout":
@@ -189,5 +191,8 @@ export function botRunText(run: BotRun, botName: string, opts: { technical?: boo
     }
   }
 }
+
+/** 连接中（已触发、webhook 还没送达）：只显示「···」 */
+export const isConnecting = (run: BotRun) => run.phase === "optimistic" || run.phase === "started";
 
 export const isDismissable = (run: BotRun) => run.phase === "failed" || run.phase === "timeout" || run.phase === "declined";

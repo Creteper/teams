@@ -2,12 +2,17 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import type { Attachment, Channel, Member, Message, MessageSender } from "../api/types";
 import { parseContent } from "../lib/mention";
 import { attachDeclines, formatTime, groupMessages, isDeclined } from "../lib/messages";
-import type { OutboxItem } from "../lib/outbox";
+import { outboxAsMessage, type OutboxItem } from "../lib/outbox";
+import { useReducedMotion } from "./BotAvatar/useReducedMotion";
 import { BotBadge, MemberAvatar } from "./MemberAvatar";
 import { useStickToBottom } from "./useStickToBottom";
 
 interface Row {
+  /** React key：乐观发送的消息始终用发送时的本地 key */
   key: string;
+  /** 真实消息 id（发送中 / 失败的还没有） */
+  messageId?: string;
+  seq: number;
   sender: MessageSender;
   created_at: string;
   content: string;
@@ -20,11 +25,14 @@ interface Row {
   reply_to?: string | null;
 }
 
-function toRow(m: Message): Row {
+function toRow(m: Message, keyOf: Record<string, string>, ob?: OutboxItem): Row {
   return {
     declined: isDeclined(m),
     reply_to: m.reply_to,
-    key: m.id,
+    key: keyOf[m.id] ?? m.id,
+    messageId: ob ? undefined : m.id,
+    seq: m.seq,
+    outbox: ob,
     sender: m.sender,
     created_at: m.created_at,
     content: m.content,
@@ -55,6 +63,8 @@ export function MessageList({
   onDiscard,
   highlightId,
   goneAttachmentIds,
+  keyOf = NO_KEYS,
+  localPreviews,
 }: {
   messages: Message[];
   outbox?: OutboxItem[];
@@ -75,6 +85,10 @@ export function MessageList({
   highlightId?: string | null;
   /** 已确认不可访问的附件（如所在频道已删除，§5.1）：显示“附件已不可用”，不再重试 */
   goneAttachmentIds?: ReadonlySet<string>;
+  /** 真实消息 id → 发送时的本地 key（乐观发送成功后 React key 不变，见 lib/outbox.ts） */
+  keyOf?: Record<string, string>;
+  /** 附件 id → 本地预览（object URL）：发送中先显示本地文件，发送成功后继续用，避免换图闪烁 */
+  localPreviews?: Record<string, string>;
 }) {
   // 贴底：内容变高或可视区变矮（状态条、上传卡片）时，原本在底部就跟到底
   const { scrollRef, contentRef, atBottomRef: stickRef, onScroll: trackScroll, stickIfNeeded: stick, scrollToBottom } =
@@ -82,8 +96,43 @@ export function MessageList({
   const [preview, setPreview] = useState<Attachment | null>(null);
   const byId = useMemo(() => new Map(members.map((m) => [m.id, m])), [members]);
   // bot 声明不回复的提示挂到触发消息下面（§7.7）
-  const { main, byTrigger } = useMemo(() => attachDeclines(messages), [messages]);
+  // 发送中 / 失败的消息作为伪消息排在最后，和真实消息走同一套分组，成功后同一个 key 原地更新
+  const obById = useMemo(() => new Map(outbox.map((o) => [o.local_id, o])), [outbox]);
+  const timeline = useMemo(() => [...messages, ...outbox.map(outboxAsMessage)], [messages, outbox]);
+  const { main, byTrigger } = useMemo(() => attachDeclines(timeline), [timeline]);
   const groups = useMemo(() => groupMessages(main), [main]);
+
+  // 淡入动画：只给“初次加载完成之后新出现在末尾”的行（自己发的、新收到的）；初次加载、翻页加载历史不播
+  const reducedMotion = useReducedMotion();
+  const seenRef = useRef(new Set<string>());
+  const maxSeqRef = useRef(0);
+  const primedRef = useRef(false);
+  const chanRef = useRef<string | null>(null);
+  const animatingRef = useRef(new Set<string>());
+  if (chanRef.current !== channel.id) {
+    chanRef.current = channel.id;
+    seenRef.current = new Set();
+    animatingRef.current = new Set();
+    maxSeqRef.current = 0;
+    primedRef.current = false;
+  }
+  // 正在播放淡入的行：动画结束（animationend）前一直保留动画类——中途有别的重渲染也不能把动画打断；
+  // 之后同一个 key（例如发送中 → 发送成功）不会再加回来，所以不会重播
+  const shouldAnimate = (row: Row) => {
+    if (reducedMotion) return false;
+    if (animatingRef.current.has(row.key)) return true;
+    const fresh = primedRef.current && !seenRef.current.has(row.key) && (row.outbox !== undefined || row.seq > maxSeqRef.current);
+    if (fresh) animatingRef.current.add(row.key);
+    return fresh;
+  };
+  useLayoutEffect(() => {
+    if (initialLoading) return;
+    for (const m of main) {
+      seenRef.current.add(keyOf[m.id] ?? m.id);
+      if (Number.isFinite(m.seq) && m.seq > maxSeqRef.current) maxSeqRef.current = m.seq;
+    }
+    primedRef.current = true;
+  });
 
   // 头部插入更早消息时保持滚动位置
   const firstId = messages[0]?.id;
@@ -100,7 +149,7 @@ export function MessageList({
 
   useEffect(() => {
     stick();
-  }, [messages.length, outbox.length, stick]);
+  }, [timeline.length, stick]);
   // 进入频道 / 首屏加载完成：无条件到底
   useEffect(() => {
     if (!initialLoading && !highlightId) scrollToBottom();
@@ -148,7 +197,7 @@ export function MessageList({
   function renderGroup(rows: Row[]): ReactNode {
     const first = rows[0];
     if (first.declined) {
-      const d = messages.find((m) => m.id === first.key);
+      const d = messages.find((m) => m.id === first.messageId);
       return d ? renderDecline(d, true) : null;
     }
     // 头像/名字优先用成员表（更新更及时），查不到再用消息里的 sender
@@ -159,17 +208,26 @@ export function MessageList({
         {rows.map((row, i) => {
           const mentionsMe = !!myMemberId && row.mentionIds.includes(myMemberId);
           const ob = row.outbox;
+          const flashing = !!row.messageId && flashId === row.messageId;
           return (
             <div
               key={row.key}
-              data-message-id={ob ? undefined : row.key}
-              data-highlighted={flashId === row.key ? "true" : undefined}
+              data-message-id={row.messageId}
+              data-local-key={row.key}
+              onAnimationEnd={(e) => {
+                // 只认行自身的动画结束（子元素的 spinner 等会冒泡上来）
+                if (e.target === e.currentTarget) animatingRef.current.delete(row.key);
+              }}
+              data-send-status={ob?.status}
+              data-highlighted={flashing ? "true" : undefined}
               data-mentions-me={mentionsMe || undefined}
-              className={`group/row relative flex gap-4 px-4 py-0.5 transition-colors ${flashId === row.key ? "teams-flash" : ""} ${
+              className={`group/row relative flex gap-4 px-4 py-0.5 transition-colors ${flashing ? "teams-flash" : ""} ${
+                shouldAnimate(row) ? "teams-msg-in" : ""
+              } ${
                 mentionsMe
                   ? "bg-[#f0b232]/[0.08] hover:bg-[#f0b232]/[0.13] before:absolute before:inset-y-0 before:left-0 before:w-[3px] before:bg-[#f0b232]"
                   : "hover:bg-[#2e3035]"
-              } ${ob?.status === "sending" ? "opacity-60" : ""}`}
+              }`}
             >
               <div className="w-10 shrink-0 pt-0.5">
                 {i === 0 ? (
@@ -213,8 +271,8 @@ export function MessageList({
                   <div className="mt-1 flex flex-wrap gap-2 pb-0.5">
                     {row.attachments.map((a) => (
                       <AttachmentView
-                        key={`${a.id}|${a.url}`}
-                        attachment={a}
+                        key={`${a.id}|${localPreviews?.[a.id] ? "local" : a.url}`}
+                        attachment={localPreviews?.[a.id] ? { ...a, url: localPreviews[a.id] } : a}
                         gone={!!goneAttachmentIds?.has(a.id)}
                         onPreview={setPreview}
                         onMediaLoad={stick}
@@ -226,13 +284,19 @@ export function MessageList({
                 ) : null}
                 {ob ? (
                   ob.status === "sending" ? (
-                    <p className="text-xs text-[#949ba4]">发送中…</p>
+                    <p className="flex items-center gap-1.5 text-xs text-[#949ba4]" data-testid="sending-indicator">
+                      <span
+                        aria-hidden="true"
+                        className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-[#949ba4]/30 border-t-[#b5bac1] motion-reduce:animate-none"
+                      />
+                      <span>发送中…</span>
+                    </p>
                   ) : (
                     <p className="flex flex-wrap items-center gap-2 text-xs text-[#f23f43]" role="alert">
                       <span aria-hidden="true">⚠</span>
                       <span>发送失败{ob.error ? `：${ob.error}` : ""}</span>
                       <button type="button" className="font-semibold text-brand-light hover:underline" onClick={() => onRetrySend?.(ob.local_id)}>
-                        重发
+                        重试
                       </button>
                       <button type="button" className="font-semibold text-[#b5bac1] hover:underline" onClick={() => onDiscard?.(ob.local_id)}>
                         删除
@@ -240,7 +304,7 @@ export function MessageList({
                     </p>
                   )
                 ) : null}
-                {byTrigger.get(row.key)?.map((d) => renderDecline(d, false))}
+                {row.messageId ? byTrigger.get(row.messageId)?.map((d) => renderDecline(d, false)) : null}
               </div>
             </div>
           );
@@ -248,18 +312,6 @@ export function MessageList({
       </div>
     );
   }
-
-  const outboxRows: Row[] = outbox.map((o) => ({
-    key: o.local_id,
-    sender: o.sender,
-    created_at: o.created_at,
-    content: o.content,
-    deleted: false,
-    attachments: o.attachments,
-    mentionIds: [],
-    mentionNames: new Map(),
-    outbox: o,
-  }));
 
   return (
     <div
@@ -291,8 +343,7 @@ export function MessageList({
       ) : (
         <WelcomeBlock channel={channel} />
       )}
-      {!initialLoading ? groups.map((g) => renderGroup(g.map(toRow))) : null}
-      {outboxRows.length ? renderGroup(outboxRows) : null}
+      {!initialLoading ? groups.map((g) => renderGroup(g.map((m) => toRow(m, keyOf, obById.get(m.id))))) : null}
       </div>
 
       {preview ? (
@@ -308,6 +359,8 @@ export function MessageList({
     </div>
   );
 }
+
+const NO_KEYS: Record<string, string> = {};
 
 /** 频道欢迎块：已加载到最早一条时显示在最上面；空频道也用它当空状态 */
 function WelcomeBlock({ channel }: { channel: Channel }) {

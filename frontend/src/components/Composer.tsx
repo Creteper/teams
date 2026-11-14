@@ -18,6 +18,8 @@ export interface ComposerSendPayload {
   attachments: Attachment[];
   /** 被 @ 的 member_id */
   mentionIds: string[];
+  /** 附件 id → 本地文件的 object URL：消息“发送中”时先显示本地预览（所有权交给外层，由外层释放） */
+  previews?: Record<string, string>;
 }
 
 interface PendingUpload {
@@ -49,6 +51,9 @@ export function Composer({
   const [caret, setCaret] = useState(0);
   const [picked, setPicked] = useState<MentionCandidate[]>([]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  // 附件 id → 本地预览 object URL；发送时交给外层，移除附件 / 卸载时释放
+  const previewsRef = useRef<Record<string, string>>({});
+  useEffect(() => () => Object.values(previewsRef.current).forEach((u) => URL.revokeObjectURL(u)), []);
   const [uploads, setUploads] = useState<PendingUpload[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [activeIdx, setActiveIdx] = useState(0);
@@ -97,7 +102,15 @@ export function Composer({
     if (!text.trim() && attachments.length === 0) return;
     setError(null);
     const { content, mentionIds } = serializeMentions(text.trim(), picked);
-    onSend({ content, attachments, mentionIds });
+    const previews: Record<string, string> = {};
+    for (const a of attachments) {
+      const u = previewsRef.current[a.id];
+      if (u) {
+        previews[a.id] = u;
+        delete previewsRef.current[a.id];
+      }
+    }
+    onSend({ content, attachments, mentionIds, previews });
     setText("");
     setCaret(0);
     setPicked([]);
@@ -119,6 +132,7 @@ export function Composer({
         signal: controller.signal,
         onProgress: (p) => setUploads((prev) => prev.map((u) => (u.key === key ? { ...u, progress: p } : u))),
       });
+      if (typeof URL.createObjectURL === "function") previewsRef.current[a.id] = URL.createObjectURL(file);
       setAttachments((prev) => [...prev, a]);
     } catch (e) {
       if (!(e instanceof DOMException && e.name === "AbortError")) setError(e instanceof Error ? e.message : String(e));
@@ -198,14 +212,19 @@ export function Composer({
           {attachments.map((a) => (
             <div key={a.id} className="relative rounded bg-[#2b2d31] p-1">
               {a.kind === "image" ? (
-                <img src={a.url} alt={a.file_name} className="h-20 w-20 rounded object-cover" />
+                <img src={previewsRef.current[a.id] ?? a.url} alt={a.file_name} className="h-20 w-20 rounded object-cover" />
               ) : (
-                <video src={a.url} className="h-20 w-28 rounded bg-black object-cover" muted />
+                <video src={previewsRef.current[a.id] ?? a.url} className="h-20 w-28 rounded bg-black object-cover" muted />
               )}
               <button
                 type="button"
                 aria-label={`移除 ${a.file_name}`}
-                onClick={() => setAttachments((prev) => prev.filter((x) => x.id !== a.id))}
+                onClick={() => {
+                  const u = previewsRef.current[a.id];
+                  if (u) URL.revokeObjectURL(u);
+                  delete previewsRef.current[a.id];
+                  setAttachments((prev) => prev.filter((x) => x.id !== a.id));
+                }}
                 className="absolute -right-2 -top-2 h-5 w-5 rounded-full bg-[#f23f43] text-xs text-white"
               >
                 ×

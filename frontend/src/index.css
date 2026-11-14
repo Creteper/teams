@@ -50,3 +50,13 @@ a {
 @media (prefers-reduced-motion: reduce) {
   .teams-flash { animation: none; background-color: rgb(109 92 246 / 0.22); box-shadow: inset 3px 0 0 #8b7cff; }
 }
+
+/* 新消息淡入（自己发的、新收到的）：只改 opacity / transform，不影响布局高度，贴底不受影响 */
+@keyframes teams-msg-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+.teams-msg-in { animation: teams-msg-in 200ms ease-out both; }
+@media (prefers-reduced-motion: reduce) {
+  .teams-msg-in { animation: none; }
+}

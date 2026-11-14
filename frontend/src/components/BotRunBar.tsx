@@ -1,8 +1,12 @@
 import type { Member } from "../api/types";
-import { botRunText, isDismissable, type BotRun } from "../lib/botRuns";
+import { botRunText, isConnecting, isDismissable, type BotRun } from "../lib/botRuns";
+import { MemberAvatar } from "./MemberAvatar";
 
 /**
- * bot 处理状态区：放在消息列表和输入框之间（正常布局，不浮层），正在处理 / 正在重试 / 失败 / 暂时没有回复（后两者可关闭）。
+ * bot 运行状态区：放在消息列表和输入框之间（正常布局，不浮层）。
+ * - 连接中（bot.run.started 或乐观状态：已触发、webhook 还没送达）：只显示「···」动画；
+ * - 已送达（bot.run.delivered：webhook 返回 2xx）：bot 的程序化头像 +「正在输入…」；
+ * - 重试中 / 失败 / 暂时没有回复 / 选择不回复：沿用原来的文案（后三者可关闭）。
  * 失败的技术原因（no_webhook 等）只给所有者/管理员看；普通成员看到“<bot名> 暂时无法响应”。
  */
 export function BotRunBar({
@@ -17,10 +21,37 @@ export function BotRunBar({
   onDismiss(key: string): void;
 }) {
   if (runs.length === 0) return null;
-  const nameOf = (id: string) => members.find((m) => m.id === id)?.display_name ?? "Bot";
+  const memberOf = (id: string) => members.find((m) => m.id === id);
+  const nameOf = (id: string) => memberOf(id)?.display_name ?? "Bot";
+  const dots = (
+    <span className="flex gap-0.5" aria-hidden="true">
+      <i className="teams-dot inline-block h-1.5 w-1.5 rounded-full bg-current" />
+      <i className="teams-dot inline-block h-1.5 w-1.5 rounded-full bg-current" />
+      <i className="teams-dot inline-block h-1.5 w-1.5 rounded-full bg-current" />
+    </span>
+  );
   return (
     <div className="flex shrink-0 flex-col gap-1 px-4 pb-1.5" aria-live="polite" data-testid="bot-run-bar">
       {runs.map((r) => {
+        const text = botRunText(r, nameOf(r.bot_member_id), { technical: showTechnicalReason });
+        if (isConnecting(r)) {
+          return (
+            <div key={r.key} data-phase={r.phase} data-stage="connecting" title={text} className="flex h-7 items-center px-3 text-[#b5bac1]">
+              {dots}
+              <span className="sr-only">{text}</span>
+            </div>
+          );
+        }
+        if (r.phase === "delivered") {
+          const m = memberOf(r.bot_member_id);
+          return (
+            <div key={r.key} data-phase={r.phase} data-stage="typing" title={text} className="flex h-7 items-center gap-2 px-3 text-xs text-[#b5bac1]">
+              {m ? <MemberAvatar member={m} size={20} /> : null}
+              <span aria-hidden="true">正在输入…</span>
+              <span className="sr-only">{text}</span>
+            </div>
+          );
+        }
         const bad = r.phase === "failed";
         const warn = r.phase === "timeout";
         const declined = r.phase === "declined";
@@ -32,16 +63,8 @@ export function BotRunBar({
               bad ? "bg-[#f23f43]/15 text-[#ff8a8c]" : warn ? "bg-[#f0b232]/15 text-[#f0b232]" : declined ? "bg-white/[0.04] text-[#949ba4]" : "text-[#b5bac1]"
             }`}
           >
-            {bad || warn || declined ? (
-              <span aria-hidden="true">{bad ? "⚠" : warn ? "⏱" : "⊘"}</span>
-            ) : (
-              <span className="flex gap-0.5" aria-hidden="true">
-                <i className="teams-dot inline-block h-1.5 w-1.5 rounded-full bg-current" />
-                <i className="teams-dot inline-block h-1.5 w-1.5 rounded-full bg-current" />
-                <i className="teams-dot inline-block h-1.5 w-1.5 rounded-full bg-current" />
-              </span>
-            )}
-            <span className="flex-1">{botRunText(r, nameOf(r.bot_member_id), { technical: showTechnicalReason })}</span>
+            {bad || warn || declined ? <span aria-hidden="true">{bad ? "⚠" : warn ? "⏱" : "⊘"}</span> : dots}
+            <span className="flex-1">{text}</span>
             {isDismissable(r) ? (
               <button type="button" aria-label="关闭提示" className="text-base leading-none opacity-80 hover:opacity-100" onClick={() => onDismiss(r.key)}>
                 ×

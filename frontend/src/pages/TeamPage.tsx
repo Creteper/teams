@@ -18,7 +18,7 @@ import { useUnread } from "../useUnread";
 import { ApiError } from "../api/errors";
 import { applyAttachmentUrls, chunk, idsNeedingRefresh } from "../lib/attachments";
 import { DECLINED_SHOW_MS, botRunsReducer } from "../lib/botRuns";
-import { newClientMsgId, type OutboxItem } from "../lib/outbox";
+import { emptySendState, matchOutbox, newClientMsgId, sendReducer, type OutboxItem } from "../lib/outbox";
 import { BotRunBar } from "../components/BotRunBar";
 import { TeamSettingsDialog } from "../components/TeamSettingsDialog";
 import { ProfileDialog } from "../components/ProfileDialog";
@@ -59,7 +59,16 @@ export default function TeamPage() {
   const [hasMore, setHasMore] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [messagesLoading, setMessagesLoading] = useState(true);
-  const [outbox, setOutbox] = useState<OutboxItem[]>([]);
+  // 乐观发送：outbox + 真实消息 id → 本地 key（见 lib/outbox.ts）
+  const [sendState, dispatchSend] = useReducer(sendReducer, emptySendState);
+  const sendStateRef = useRef(sendState);
+  sendStateRef.current = sendState;
+  const outbox = sendState.outbox;
+  // 附件 id → 本地预览 object URL（发送中先显示本地文件；页面卸载时释放）
+  const [localPreviews, setLocalPreviews] = useState<Record<string, string>>({});
+  const localPreviewsRef = useRef(localPreviews);
+  localPreviewsRef.current = localPreviews;
+  useEffect(() => () => Object.values(localPreviewsRef.current).forEach((u) => URL.revokeObjectURL(u)), []);
   const [botRuns, dispatchRuns] = useReducer(botRunsReducer, {});
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
@@ -263,6 +272,16 @@ export default function TeamPage() {
       switch (frame.type) {
         case "message.created":
           dispatchRuns({ type: "message", message: frame.data, now: Date.now() });
+          {
+            // 我自己发的消息可能比 HTTP 响应先推回来：认领 outbox 里对应的那条（同一个 React key 原地变成真实消息）
+            const st = sendStateRef.current;
+            const hit = st.keyOf[frame.data.id] ? undefined : matchOutbox(st.outbox, frame.data, myMemberIdRef.current ?? "");
+            if (hit) {
+              dispatchSend({ type: "echo", message: frame.data, myMemberId: myMemberIdRef.current ?? "" });
+              if (hit.bot_member_ids.length)
+                dispatchRuns({ type: "optimistic", trigger_message_id: frame.data.id, channel_id: frame.data.channel_id, bot_member_ids: hit.bot_member_ids, now: Date.now() });
+            }
+          }
           if (frame.data.channel_id === channelId) {
             setMessages((prev) => mergeMessages(prev, [frame.data]));
             // 正在看的频道来了算未读的新消息：推进已读（自己发的由服务端推进，bot_declined 不计）
@@ -365,28 +384,33 @@ export default function TeamPage() {
 
   // 切频道时清掉本地待发送
   useEffect(() => {
-    setOutbox((prev) => prev.filter((o) => o.status === "failed" || o.channel_id === channelId));
+    if (channelId) dispatchSend({ type: "leaveChannel", channel_id: channelId });
   }, [channelId]);
 
-  /** 发送（只走 REST）：先乐观显示，失败标记可重发/删除；client_msg_id 重发时不变，后端幂等 */
+  /**
+   * 发送（只走 REST）：点发送时已乐观显示；成功后在同一条（同一个 key）上更新成真实数据，
+   * 失败标记可重试/删除，重试仍在原来那条上；client_msg_id 重试时不变，后端幂等。
+   */
   const deliver = useCallback(
     async (item: OutboxItem) => {
-      setOutbox((prev) => prev.map((o) => (o.local_id === item.local_id ? { ...o, status: "sending", error: undefined } : o)));
+      dispatchSend({ type: "sending", local_id: item.local_id });
       try {
         const msg = await api.sendMessage(token, item.channel_id, {
           content: item.content,
           attachment_ids: item.attachments.map((a) => a.id),
           client_msg_id: item.client_msg_id,
         });
-        setOutbox((prev) => prev.filter((o) => o.local_id !== item.local_id));
+        const st = sendStateRef.current;
+        const claimed = !!st.keyOf[msg.id];
+        // WebSocket 先到、但没匹配上（已按自己的 id 显示）：不再换 key，只去掉 outbox 那条，避免重复
+        const alreadyShown = !claimed && messagesRef.current.some((m) => m.id === msg.id);
+        dispatchSend({ type: "sent", local_id: item.local_id, message: msg, alreadyShown });
         setMessages((prev) => (msg.channel_id === channelId ? mergeMessages(prev, [msg]) : prev));
         const bots = msg.mentions.filter((m) => m.type === "bot").map((m) => m.member_id);
-        if (bots.length)
+        if (bots.length && !claimed)
           dispatchRuns({ type: "optimistic", trigger_message_id: msg.id, channel_id: msg.channel_id, bot_member_ids: bots, now: Date.now() });
       } catch (e) {
-        setOutbox((prev) =>
-          prev.map((o) => (o.local_id === item.local_id ? { ...o, status: "failed", error: e instanceof Error ? e.message : String(e) } : o)),
-        );
+        dispatchSend({ type: "failed", local_id: item.local_id, error: e instanceof Error ? e.message : String(e) });
       }
     },
     [token, channelId],
@@ -512,6 +536,8 @@ export default function TeamPage() {
             <MessageList
               messages={messages}
               outbox={outbox.filter((o) => o.channel_id === channel.id)}
+              keyOf={sendState.keyOf}
+              localPreviews={localPreviews}
               members={members}
               myMemberId={myMemberId}
               channel={channel}
@@ -525,7 +551,7 @@ export default function TeamPage() {
                 const item = outbox.find((o) => o.local_id === localId);
                 if (item) void deliver(item);
               }}
-              onDiscard={(localId) => setOutbox((prev) => prev.filter((o) => o.local_id !== localId))}
+              onDiscard={(localId) => dispatchSend({ type: "discard", local_id: localId })}
               highlightId={highlightId}
               goneAttachmentIds={goneAttachments}
             />
@@ -543,7 +569,8 @@ export default function TeamPage() {
               onAutoFocused={() => setFocusComposerFor(null)}
               members={members.filter((m) => m.id !== myMemberId)}
               onUpload={(file, opts) => api.uploadAttachment(token, teamId, file, opts)}
-              onSend={({ content, attachments, mentionIds }) => {
+              onSend={({ content, attachments, mentionIds, previews }) => {
+                if (previews && Object.keys(previews).length) setLocalPreviews((prev) => ({ ...prev, ...previews }));
                 const item: OutboxItem = {
                   local_id: `local-${crypto.randomUUID()}`,
                   channel_id: channel.id,
@@ -555,7 +582,7 @@ export default function TeamPage() {
                   sender: mySender,
                   bot_member_ids: members.filter((m) => m.type === "bot" && mentionIds.includes(m.id)).map((m) => m.id),
                 };
-                setOutbox((prev) => [...prev, item]);
+                dispatchSend({ type: "enqueue", item });
                 void deliver(item);
               }}
             />
