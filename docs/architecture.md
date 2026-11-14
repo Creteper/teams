@@ -15,6 +15,7 @@ teams-server  (Go, 127.0.0.1:8090)
    ├─ channels    频道
    ├─ messages    发送/分页/编辑/删除、mention 解析、trigger_depth 计算
    ├─ attachments 上传校验、存储、签名 URL
+   ├─ avatars     用户头像 / team 图标 / bot 头像（上传或远程拉取转存）
    ├─ bots        bot 管理、令牌轮换、webhook 配置
    ├─ webhook     投递队列 worker、签名、重试、防循环
    ├─ realtime    WebSocket hub（按 team 扇出事件）
@@ -40,6 +41,8 @@ backend/
 │   ├── httpapi/                  # 路由（net/http ServeMux 方法+路径模式）、中间件、错误输出
 │   ├── auth/                     # argon2id、令牌生成与哈希、会话
 │   ├── teams/ channels/ messages/ attachments/ bots/
+│   ├── avatars/                  # 头像存储、远程拉取（复用 netguard）
+│   ├── netguard/                 # 出站 HTTP 安全拨号（拒绝内网 IP），webhook 与头像拉取共用
 │   ├── mention/                  # <@uuid> 解析与 content_plain 渲染
 │   ├── webhook/                  # 队列 worker、HMAC、重试、SSRF 防护、限流
 │   ├── realtime/                 # WebSocket hub/client
@@ -57,17 +60,18 @@ backend/
 
 | 表 | 关键列 | 说明 |
 |---|---|---|
-| `users` | `id uuid pk`, `username citext unique`, `password_hash`, `display_name`, `avatar_attachment_id`, `created_at` | 人类账号 |
+| `users` | `id uuid pk`, `username citext unique`, `password_hash`, `display_name`, `avatar_id null`, `created_at` | 人类账号 |
 | `sessions` | `id`, `user_id fk`, `token_hash bytea unique`, `expires_at`, `last_used_at`, `created_at`, `user_agent` | 会话令牌（只存 SHA-256） |
-| `teams` | `id`, `name`, `description`, `owner_user_id`, `created_at`, `deleted_at` | |
-| `team_members` | `id uuid pk`（= member_id）, `team_id fk`, `kind ('user'|'bot')`, `user_id null`, `bot_id null`, `role ('owner'|'admin'|'member'|'bot')`, `joined_at`, `left_at` | 统一成员身份；`unique(team_id,user_id)`；check: kind 与 user_id/bot_id 一致 |
-| `bots` | `id`, `team_id`, `member_id unique`, `name`, `display_name`, `description`, `avatar_attachment_id`, `token_hash bytea unique`, `token_prefix`, `created_by_member_id`, `created_at`, `deleted_at` | `unique(team_id, lower(name))` |
+| `teams` | `id`, `name`, `description`, `icon_avatar_id null`, `owner_user_id`, `created_at`, `deleted_at` | |
+| `team_members` | `id uuid pk`（= member_id）, `team_id fk`, `type ('user'|'bot')`, `user_id null`, `bot_id null`, `role ('owner'|'admin'|'member'|'bot')`, `joined_at`, `left_at` | 统一成员身份；`unique(team_id,user_id)`；check: type 与 user_id/bot_id 一致 |
+| `bots` | `id`, `team_id`, `member_id unique`, `name`, `display_name`, `description`, `avatar_id null`, `avatar_source_url`, `token_hash bytea unique`, `token_prefix`, `created_by_member_id`, `created_at`, `deleted_at` | `unique(team_id, lower(name))` |
 | `bot_webhooks` | `bot_id pk`, `url`, `enabled`, `secret_header_name`, `secret_header_value_enc bytea`, `signing_secret_enc bytea`, `updated_at` | 密钥 AES-GCM 加密 |
 | `channels` | `id`, `team_id`, `name`, `topic`, `is_default`, `created_by_member_id`, `created_at`, `deleted_at` | `unique(team_id, lower(name)) where deleted_at is null` |
 | `messages` | `id uuid pk`, `seq bigint identity unique`, `team_id`, `channel_id`, `sender_member_id`, `content text`, `reply_to uuid null`, `trigger_depth smallint`, `client_msg_id`, `created_at`, `edited_at`, `deleted_at` | 索引 `(channel_id, seq)`；`unique(sender_member_id, client_msg_id)` |
 | `message_mentions` | `message_id`, `member_id`, `position` | pk(message_id, member_id)；索引 member_id（"提到我的"） |
 | `attachments` | `id`, `team_id`, `uploader_member_id`, `message_id null`, `kind ('image'|'video')`, `mime_type`, `size_bytes`, `file_name`, `storage_key`, `sha256`, `width`, `height`, `duration_ms`, `created_at` | 未引用超 24h 由清理任务删除 |
 | `webhook_deliveries` | `id`, `bot_id`, `message_id`, `channel_id`, `event`, `status`, `attempts`, `next_attempt_at`, `last_status_code`, `last_error`, `payload jsonb`, `created_at`, `finished_at` | 既是投递队列也是日志；`unique(bot_id, message_id)`；索引 `(status, next_attempt_at)`、`(bot_id, channel_id, created_at)` |
+| `avatars` | `id uuid pk`, `owner_kind ('user'|'team'|'bot')`, `owner_id`, `mime_type`, `size_bytes`, `width`, `height`, `sha256`, `storage_key`, `source_url null`, `created_at` | 头像/图标，与消息附件分开；公开读取 |
 | `schema_migrations` | `version`, `applied_at` | 迁移记录 |
 
 删除策略：team/频道/bot 软删除（`deleted_at`），消息软删除；硬删由后续管理任务处理。
@@ -86,10 +90,11 @@ backend/
 | `TEAMS_CORS_ORIGINS` | `http://localhost:5173` | 逗号分隔；同时用于 WS Origin 校验 |
 | `TEAMS_SESSION_TTL` | `720h` | 会话有效期 |
 | `TEAMS_MAX_IMAGE_BYTES` / `TEAMS_MAX_VIDEO_BYTES` | 10 MiB / 100 MiB | 上传上限 |
+| `TEAMS_MAX_AVATAR_BYTES` | 5 MiB | 头像/图标上限 |
 | `TEAMS_MAX_TRIGGER_DEPTH` | `3` | 防循环深度上限 |
 | `TEAMS_WEBHOOK_RATE_PER_MINUTE` | `10` | 每 bot 每频道每分钟触发上限 |
 | `TEAMS_WEBHOOK_TIMEOUT` | `10s` | 单次投递超时 |
-| `TEAMS_WEBHOOK_ALLOW_PRIVATE` | `false` | 允许 http 和内网 webhook 地址（仅本地调试） |
+| `TEAMS_WEBHOOK_ALLOW_PRIVATE` | `false` | 允许 http 和内网地址的 webhook / 远程头像拉取（仅本地调试） |
 | `TEAMS_LOG_LEVEL` | `info` | slog 级别 |
 
 端口选择：2026-11-14 在用户 Mac 上 `lsof -iTCP -sTCP:LISTEN` 检查，3000（zhw AI 客服）、3306、4321、5000、5173、5432、6379、7000、13001 等已占用，**8090 空闲**，选定 8090（8080 也空闲，作为备选）。
@@ -120,6 +125,7 @@ backend/
 - 成员加入/移除 team 时更新 hub 订阅。
 - 单进程内存 hub 足够第一版；若将来多实例，改为 PostgreSQL `LISTEN/NOTIFY` 或 Redis pub/sub 扇出，hub 接口不变。
 - 心跳：服务端 60 秒读超时；客户端 25 秒发 `ping`。
+- **不做在线状态**：不记录、不推送 presence/typing，hub 只负责数据变更事件。
 
 ## 8. 文件存储
 
@@ -128,7 +134,15 @@ backend/
 - 上传流程：`http.MaxBytesReader` 限制总大小 → 读前 512 字节 `http.DetectContentType` 嗅探 + 白名单 → 流式写临时文件并计算 sha256 → 原子重命名 → 写 `attachments`。图片尝试读取宽高（标准库 image 解码 config）。
 - 下载：`http.ServeContent`（支持 Range），加 `nosniff`。签名 URL = HMAC(`TEAMS_SECRET_KEY`, `attachment_id|exp`)。
 - 将来换对象存储（S3/R2/OSS）：实现同一接口，下载改为 302 到对象存储预签名 URL。
-- 清理任务每小时删除 24h 未被引用的附件。
+- 清理任务每小时删除 24h 未被引用的附件和不再被引用的旧头像。
+
+### 头像 / 图标
+
+- 独立表 `avatars`，文件在 `TEAMS_UPLOAD_DIR/avatars/<avatar_id>`，公开路由 `/api/v1/avatars/{id}`（长缓存）。
+- 来源：multipart 上传，或 `avatar_url` 远程拉取（`netguard` 拒绝内网地址、只允许 http/https、10 秒超时、5 MB、最多 3 次重定向、嗅探类型）。
+- 同 `source_url` + 同 sha256 视为未变化，不生成新记录、不推送，支持 bot 定时同步。
+- 变更后发布 `member.updated` / `team.updated`。
+- 前端（Discord 式布局）所需：team 列表带 `icon_url`，成员列表带 `type` 和 `avatar_url`。
 
 ## 9. 防循环设计
 

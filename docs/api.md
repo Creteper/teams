@@ -87,7 +87,9 @@
 吊销当前会话令牌。`204`。
 
 ### GET /api/v1/me
-返回当前用户。`PATCH /api/v1/me` 可改 `display_name`、`avatar_attachment_id`。
+返回当前用户。`PATCH /api/v1/me` 可改 `display_name`。
+
+头像：`PUT /api/v1/me/avatar`（`multipart/form-data`，字段 `file`）上传并设置；`DELETE /api/v1/me/avatar` 清除。规则见 §10。用户对象的 `avatar_url` 为 `null` 或 `/api/v1/avatars/<avatar_id>`。变更后向该用户所在全部 team 推送 `member.updated`。
 
 ---
 
@@ -97,35 +99,39 @@
 
 | 方法 | 路径 | 权限 | 说明 |
 |---|---|---|---|
-| POST | `/api/v1/teams` | 登录用户 | 创建 team，创建者成为 owner；自动建 `general` 频道 |
+| POST | `/api/v1/teams` | 登录用户 | 创建 team（`name`、`description`），创建者成为 owner；自动建 `general` 频道；图标创建后用 `PUT …/icon` 设置 |
 | GET | `/api/v1/teams` | 登录用户 | 我加入的 team 列表 |
 | GET | `/api/v1/teams/{team_id}` | 成员 | 详情 |
 | PATCH | `/api/v1/teams/{team_id}` | owner/admin | 改 `name`、`description` |
+| PUT | `/api/v1/teams/{team_id}/icon` | owner/admin | 上传 team 图标（`multipart/form-data`，字段 `file`，规则见 §10），推送 `team.updated` |
+| DELETE | `/api/v1/teams/{team_id}/icon` | owner/admin | 清除图标 |
 | DELETE | `/api/v1/teams/{team_id}` | owner | 删除（级联频道、消息、bot） |
 
 Team 对象：
 ```json
-{ "id": "…", "name": "TeAms 开发组", "description": "", "owner_user_id": "…",
+{ "id": "…", "name": "TeAms 开发组", "description": "", "icon_url": "/api/v1/avatars/<avatar_id>", "owner_user_id": "…",
   "my_member_id": "…", "my_role": "owner", "created_at": "…" }
 ```
 
 ### 2.1 成员
 
-成员（member）是 team 内的统一身份：用户和 bot 都是成员，`@`、发消息都用 **member_id**。
+成员（member）是 team 内的统一身份：用户和 bot 都是成员，`@`、发消息都用 **member_id**。`type` 字段区分 `user` / `bot`，前端成员列表据此显示 **BOT** 标记。
+
+> 不提供在线状态：没有 presence/online 字段，也没有相应推送事件。
 
 | 方法 | 路径 | 权限 | 说明 |
 |---|---|---|---|
-| GET | `/api/v1/teams/{team_id}/members` | 成员 | 列表（含 bot），支持 `?kind=user|bot` |
+| GET | `/api/v1/teams/{team_id}/members` | 成员 | 列表（含 bot），支持 `?type=user|bot` |
 | POST | `/api/v1/teams/{team_id}/members` | owner/admin | 按用户名直接加人：`{ "username": "tina", "role": "member" }` |
 | PATCH | `/api/v1/teams/{team_id}/members/{member_id}` | owner/admin | 改 `role`（不能改 owner） |
 | DELETE | `/api/v1/teams/{team_id}/members/{member_id}` | owner/admin，或本人（退出） | 移除；owner 不能退出 |
 
 Member 对象：
 ```json
-{ "id": "<member_id>", "team_id": "…", "kind": "user", "user_id": "…", "bot_id": null,
+{ "id": "<member_id>", "team_id": "…", "type": "user", "user_id": "…", "bot_id": null,
   "display_name": "Tina", "username": "tina", "avatar_url": null, "role": "member", "joined_at": "…" }
 ```
-bot 成员：`"kind": "bot"`, `"bot_id": "…"`, `"user_id": null`, `"role": "bot"`。
+bot 成员：`"type": "bot"`, `"bot_id": "…"`, `"user_id": null`, `"role": "bot"`。
 
 > 邀请链接（invite code）留到后续阶段；第一版按用户名直接添加。
 
@@ -163,10 +169,10 @@ Channel 对象：
   "seq": 1025,
   "team_id": "…",
   "channel_id": "…",
-  "sender": { "member_id": "…", "kind": "user", "display_name": "Creteper", "avatar_url": null },
+  "sender": { "member_id": "…", "type": "user", "display_name": "Creteper", "avatar_url": null },
   "content": "<@0193aaaa-…> 帮我总结一下今天的讨论",
   "mentions": [
-    { "member_id": "0193aaaa-…", "kind": "bot", "display_name": "Grok" }
+    { "member_id": "0193aaaa-…", "type": "bot", "display_name": "Grok" }
   ],
   "attachments": [
     { "id": "…", "kind": "image", "mime_type": "image/png", "size_bytes": 20480,
@@ -250,14 +256,18 @@ Channel 对象：
 
 ## 6. Bot 管理
 
-bot 是 team 成员（`kind: bot`），由 owner/admin 创建和管理。
+bot 是 team 成员（`type: bot`），由 owner/admin 创建和管理。
 
 | 方法 | 路径 | 权限 | 说明 |
 |---|---|---|---|
 | POST | `/api/v1/teams/{team_id}/bots` | owner/admin | 创建 bot 及其成员身份，返回令牌（只显示一次） |
 | GET | `/api/v1/teams/{team_id}/bots` | 成员 | 列表（不含任何密钥） |
 | GET | `/api/v1/bots/{bot_id}` | 成员 | 详情 |
-| PATCH | `/api/v1/bots/{bot_id}` | owner/admin | 改 `display_name`、`description`、`avatar_attachment_id` |
+| PATCH | `/api/v1/bots/{bot_id}` | owner/admin | 改 `display_name`、`description`、`avatar_url`（服务端拉取转存，见 §10.3） |
+| PUT | `/api/v1/bots/{bot_id}/avatar` | owner/admin | 直接上传 bot 头像（multipart `file`） |
+| DELETE | `/api/v1/bots/{bot_id}/avatar` | owner/admin | 清除头像 |
+| GET / PATCH | `/api/v1/bots/me` | **bot 令牌** | bot 自助查看/修改自己的名字和头像，见 §10.3 |
+| PUT | `/api/v1/bots/me/avatar` | **bot 令牌** | bot 自助上传头像（multipart `file`） |
 | DELETE | `/api/v1/bots/{bot_id}` | owner/admin | 删除 bot（令牌立即失效，历史消息保留并显示为已删除 bot） |
 | POST | `/api/v1/bots/{bot_id}/token/rotate` | owner/admin | 轮换令牌，旧令牌立即失效，返回新令牌一次 |
 | PUT | `/api/v1/bots/{bot_id}/webhook` | owner/admin | 配置出站 webhook |
@@ -269,13 +279,15 @@ bot 是 team 成员（`kind: bot`），由 owner/admin 创建和管理。
 ### 6.1 创建
 ```json
 // POST /api/v1/teams/{team_id}/bots
-{ "name": "grok", "display_name": "Grok", "description": "Grok Bot 接入" }
+{ "name": "grok", "display_name": "Grok", "description": "Grok Bot 接入",
+  "avatar_url": "https://<GROK_AVATAR_URL>" }   // 可选，服务端拉取并转存
 // 201
 { "bot": { "id": "<bot_id>", "member_id": "<member_id>", "team_id": "…", "name": "grok",
-           "display_name": "Grok", "description": "…", "webhook": null, "created_at": "…" },
+           "display_name": "Grok", "description": "…", "avatar_url": "/api/v1/avatars/<avatar_id>",
+           "avatar_source_url": "https://<GROK_AVATAR_URL>", "webhook": null, "created_at": "…" },
   "token": "<BOT_TOKEN>" }
 ```
-`name` 在 team 内唯一，规则同用户名。
+`name` 在 team 内唯一，规则同用户名。若 `avatar_url` 拉取失败，bot 仍创建成功，响应额外带 `"warnings": [{"code":"avatar_fetch_failed","message":"…"}]`，头像为空。
 
 ### 6.2 配置 webhook
 ```json
@@ -307,7 +319,8 @@ bot 令牌可用的接口（其余返回 `403`）：
 
 | 方法 | 路径 |
 |---|---|
-| GET | `/api/v1/bot/me` → `{ bot, member, team }` |
+| GET | `/api/v1/bots/me` → `{ bot, member, team }`（`/api/v1/bot/me` 为同义别名） |
+| PATCH | `/api/v1/bots/me`、PUT/DELETE `/api/v1/bots/me/avatar`（见 §10.3） |
 | GET | `/api/v1/teams/{team_id}/channels`、`/api/v1/channels/{id}` |
 | GET | `/api/v1/teams/{team_id}/members` |
 | GET | `/api/v1/channels/{id}/messages`、`/api/v1/messages/{id}` |
@@ -363,17 +376,18 @@ X-TeAms-Signature: sha256=<hex>            # HMAC-SHA256(<SIGNING_SECRET>, "<tim
   "event": "message.mention",
   "delivery_id": "0193d001-…",
   "sent_at": "2026-11-14T14:38:01.000Z",
-  "bot": { "id": "<bot_id>", "member_id": "<bot_member_id>", "name": "grok", "display_name": "Grok" },
-  "team": { "id": "<team_id>", "name": "TeAms 开发组" },
+  "bot": { "id": "<bot_id>", "member_id": "<bot_member_id>", "name": "grok", "display_name": "Grok",
+           "avatar_url": "https://<PUBLIC_BASE_URL>/api/v1/avatars/<avatar_id>" },
+  "team": { "id": "<team_id>", "name": "TeAms 开发组", "icon_url": null },
   "channel": { "id": "<channel_id>", "name": "general" },
-  "sender": { "member_id": "<sender_member_id>", "kind": "user", "user_id": "…", "bot_id": null,
-              "username": "creteper", "display_name": "Creteper" },
+  "sender": { "member_id": "<sender_member_id>", "type": "user", "user_id": "…", "bot_id": null,
+              "username": "creteper", "display_name": "Creteper", "avatar_url": null },
   "message": {
     "id": "<message_id>",
     "seq": 1025,
     "content": "<@<bot_member_id>> 帮我总结一下今天的讨论",
     "content_plain": "@Grok 帮我总结一下今天的讨论",
-    "mentions": [ { "member_id": "<bot_member_id>", "kind": "bot", "display_name": "Grok" } ],
+    "mentions": [ { "member_id": "<bot_member_id>", "type": "bot", "display_name": "Grok" } ],
     "attachments": [
       { "id": "…", "kind": "image", "mime_type": "image/png", "size_bytes": 20480, "file_name": "a.png",
         "url": "https://<PUBLIC_BASE_URL>/api/v1/attachments/…/content?exp=…&sig=…" }
@@ -452,11 +466,10 @@ X-TeAms-Signature: sha256=<hex>            # HMAC-SHA256(<SIGNING_SECRET>, "<tim
 | `message.deleted` | `{ "id": "…", "channel_id": "…", "seq": 1025 }` |
 | `channel.created` / `channel.updated` | Channel 对象 |
 | `channel.deleted` | `{ "id": "…" }` |
-| `member.joined` / `member.updated` | Member 对象 |
+| `member.joined` / `member.updated` | Member 对象（改名、改角色、**头像变更**时都会发 `member.updated`） |
 | `member.left` | `{ "member_id": "…" }` |
 | `team.updated` | Team 对象 |
 | `team.deleted` / `team.removed` | `{ "team_id": "…" }`（removed：你被移出） |
-| `typing` | `{ "channel_id": "…", "member_id": "…" }` |
 | `pong` | `{}` |
 | `error` | `{ "code": "…", "message": "…" }` |
 
@@ -466,9 +479,10 @@ X-TeAms-Signature: sha256=<hex>            # HMAC-SHA256(<SIGNING_SECRET>, "<tim
 |---|---|
 | `auth` | 见上 |
 | `ping` | 心跳，建议每 25 秒一次；服务端 60 秒无任何帧则断开 |
-| `typing` | `{ "type": "typing", "channel_id": "…" }`，服务端节流 3 秒/频道 |
 
 发消息**只走 REST**（WS 只做推送），保证有统一的校验、幂等和 webhook 触发。
+
+不提供在线状态 / 正在输入等 presence 类事件。
 
 ### 8.3 断线重连
 
@@ -478,8 +492,8 @@ X-TeAms-Signature: sha256=<hex>            # HMAC-SHA256(<SIGNING_SECRET>, "<tim
 ```json
 { "type": "message.created", "id": "evt_01", "ts": "…", "team_id": "T1",
   "data": { "id": "M1", "seq": 1026, "channel_id": "C1",
-            "sender": { "member_id": "B1", "kind": "bot", "display_name": "Grok" },
-            "content": "<@U1> 总结如下……", "mentions": [ { "member_id": "U1", "kind": "user", "display_name": "Creteper" } ],
+            "sender": { "member_id": "B1", "type": "bot", "display_name": "Grok" },
+            "content": "<@U1> 总结如下……", "mentions": [ { "member_id": "U1", "type": "user", "display_name": "Creteper" } ],
             "attachments": [], "reply_to": "M0", "trigger_depth": 1, "created_at": "…", "edited_at": null, "deleted": false } }
 ```
 
@@ -489,3 +503,71 @@ X-TeAms-Signature: sha256=<hex>            # HMAC-SHA256(<SIGNING_SECRET>, "<tim
 
 - `GET /api/v1/healthz` → `{ "status": "ok" }`（不需鉴权，含 DB 连通检查）。
 - 每个响应带 `X-Request-Id`。
+
+---
+
+## 10. 头像与图标（用户头像、team 图标、bot 头像同步）
+
+### 10.1 通用规则
+
+- 适用于用户头像、team 图标、bot 头像。存储为独立的 avatar 记录（不是消息附件），本地目录 `TEAMS_UPLOAD_DIR/avatars/`。
+- 允许类型（按文件头嗅探）：`image/jpeg` `image/png` `image/gif` `image/webp`；大小 ≤ **5 MB**（`TEAMS_MAX_AVATAR_BYTES`）；像素 ≤ 4096×4096。
+- 访问：`GET /api/v1/avatars/{avatar_id}`，**无需鉴权**（id 不可猜，便于 `<img>` 直接用），`Cache-Control: public, max-age=31536000, immutable`。更换头像生成新 id。
+- API 返回的 `avatar_url` / `icon_url` 是相对路径 `/api/v1/avatars/<avatar_id>` 或 `null`；webhook 载荷里是基于 `TEAMS_PUBLIC_BASE_URL` 的绝对地址。
+- 变更后推送：用户头像 → 其所在每个 team 的 `member.updated`；bot 头像/名字 → 所属 team 的 `member.updated`；team 图标 → `team.updated`。
+
+### 10.2 远程拉取（`avatar_url`）的安全限制
+
+服务端拉取远程图片并**转存到本地**，不直接引用外链：
+
+- 只允许 `http` / `https`；URL ≤ 2048 字符；不允许带用户名密码。
+- 拒绝解析到内网/回环/链路本地/组播/保留地址（`10/8`、`172.16/12`、`192.168/16`、`127/8`、`169.254/16`、`100.64/10`、`0/8`、`::1`、`fc00::/7`、`fe80::/10` 等），在**建立连接时**校验实际 IP（防 DNS rebinding）。本地调试可用 `TEAMS_WEBHOOK_ALLOW_PRIVATE=true` 放开。
+- 最多跟随 3 次重定向，每一跳重新校验。
+- 总超时 10 秒；响应体超过 5 MB 立即中断；按内容嗅探类型，不信任 `Content-Type`。
+- 请求头 `User-Agent: TeAms-AvatarFetcher/1.0`，不带任何令牌或 cookie。
+- 失败返回 `422 avatar_fetch_failed`，`details.reason` 为 `invalid_url` / `blocked_address` / `timeout` / `too_large` / `unsupported_type` / `http_<status>`；创建 bot 时失败只给 warning（§6.1）。
+- 记录 `avatar_source_url` 和内容 sha256：再次提交**同一 URL 且内容未变**时不生成新头像、不推送事件（幂等，可放心定时同步）。
+
+### 10.3 Bot 头像同步方式
+
+三种方式任选：
+
+**方式 1：team 管理员设置**（用户会话，owner/admin）
+```json
+// POST /api/v1/teams/{team_id}/bots  或  PATCH /api/v1/bots/{bot_id}
+{ "display_name": "Grok", "avatar_url": "https://<GROK_AVATAR_URL>" }
+```
+或直接上传：`PUT /api/v1/bots/{bot_id}/avatar`（multipart 字段 `file`）。
+
+**方式 2：bot 用自己的令牌自助更新（推荐，用于同步 Grok Bot 头像）**
+```bash
+# JSON：给远程头像地址，服务端拉取转存
+curl -X PATCH http://127.0.0.1:8090/api/v1/bots/me \
+  -H "Authorization: Bearer <BOT_TOKEN>" -H "Content-Type: application/json" \
+  -d '{"display_name":"Grok","avatar_url":"https://<GROK_AVATAR_URL>"}'
+
+# multipart：直接上传图片（可同时改名）
+curl -X PATCH http://127.0.0.1:8090/api/v1/bots/me \
+  -H "Authorization: Bearer <BOT_TOKEN>" \
+  -F display_name=Grok -F avatar=@grok.png
+
+# 只换头像
+curl -X PUT http://127.0.0.1:8090/api/v1/bots/me/avatar \
+  -H "Authorization: Bearer <BOT_TOKEN>" -F file=@grok.png
+```
+- `PATCH /api/v1/bots/me` 可改：`display_name`（1–64 字符）、`description`（≤500）、`avatar_url`（字符串；`null` 清除）；multipart 时头像文件字段名 `avatar`。bot 不能改自己的 `name`、角色、webhook、令牌。
+- `avatar_url` 与 multipart `avatar` 同时给 → `400`。
+- 响应 `200`：`{ "bot": {…}, "member": {…} }`（含新 `avatar_url`、`avatar_source_url`）。
+- 频率：每个 bot 每分钟最多 6 次修改。
+- 清除：`DELETE /api/v1/bots/me/avatar` 或 `PATCH` 传 `"avatar_url": null`。
+
+**方式 3：处理 webhook 时顺带同步**
+webhook 载荷里 `bot.avatar_url` 是 TeAms 当前存的头像；Grok Bot 发现与自己头像不一致时调用方式 2。因同 URL 同内容幂等，也可以每次启动/定时直接调一次。
+
+头像变更后的推送：
+```json
+{ "type": "member.updated", "id": "evt_…", "ts": "…", "team_id": "T1",
+  "data": { "id": "B1", "team_id": "T1", "type": "bot", "user_id": null, "bot_id": "…",
+            "display_name": "Grok", "username": "grok", "avatar_url": "/api/v1/avatars/<avatar_id>",
+            "role": "bot", "joined_at": "…" } }
+```
