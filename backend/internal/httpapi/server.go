@@ -59,6 +59,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, store storage.Storage) (*Server
 		Delays: cfg.WebhookRetryDelays, Poll: cfg.WebhookPollInterval, Workers: cfg.WebhookWorkers,
 		Lease: cfg.WebhookTimeout + 30*time.Second,
 	}
+	s.worker.Notify = s.notifyRun
 	s.routes()
 	return s, nil
 }

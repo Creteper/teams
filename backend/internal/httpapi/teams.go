@@ -263,7 +263,7 @@ func (s *Server) createTeam(w http.ResponseWriter, r *http.Request) error {
 	if err := decodeJSON(r, &body); err != nil {
 		return err
 	}
-	name, err := cleanText("name", body.Name, 1, 64)
+	name, err := cleanText("name", body.Name, 1, 50)
 	if err != nil {
 		return err
 	}
@@ -348,23 +348,26 @@ func (s *Server) patchTeam(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	ctx := r.Context()
+	var name, desc *string
 	if body.Name != nil {
-		n, err := cleanText("name", *body.Name, 1, 64)
+		n, err := cleanText("name", *body.Name, 1, 50)
 		if err != nil {
 			return err
 		}
-		if _, err := s.pool.Exec(ctx, `UPDATE teams SET name=$2 WHERE id=$1`, id, n); err != nil {
-			return err
-		}
+		name = &n
 	}
 	if body.Description != nil {
 		d := strings.TrimSpace(*body.Description)
 		if utf8.RuneCountInString(d) > 500 {
-			return apierr.Validation("description", "description 最长 500")
+			return apierr.Validation("description", "description 最长 500 字符")
 		}
-		if _, err := s.pool.Exec(ctx, `UPDATE teams SET description=$2 WHERE id=$1`, id, d); err != nil {
-			return err
+		if hasControl(strings.NewReplacer("\n", "", "\r", "", "\t", "").Replace(d)) {
+			return apierr.Validation("description", "description 不能包含控制字符")
 		}
+		desc = &d
+	}
+	if _, err := s.pool.Exec(ctx, `UPDATE teams SET name=COALESCE($2,name), description=COALESCE($3,description) WHERE id=$1`, id, name, desc); err != nil {
+		return err
 	}
 	return s.respondTeamUpdated(w, r, id, a)
 }
@@ -557,20 +560,42 @@ func (s *Server) removeMember(w http.ResponseWriter, r *http.Request) error {
 		return apierr.BadRequest("删除 bot 请用 DELETE /api/v1/bots/{bot_id}")
 	}
 	if m.Role == "owner" {
-		return apierr.Forbidden("owner 不能被移除或退出")
+		if m.ID == a.MemberID {
+			return ownerCannotLeave()
+		}
+		return apierr.Forbidden("owner 不能被移除")
 	}
 	if m.ID != a.MemberID && !a.admin() {
 		return apierr.Forbidden("需要 owner 或 admin")
 	}
-	ctx := r.Context()
-	if _, err := s.pool.Exec(ctx, `UPDATE team_members SET left_at=now() WHERE id=$1`, m.ID); err != nil {
+	return s.doRemoveMember(w, r, teamID, m.ID, *m.UserID)
+}
+
+func ownerCannotLeave() *apierr.Error {
+	return apierr.New(http.StatusConflict, "owner_cannot_leave", "owner 不能退出 team（请先删除 team）")
+}
+
+func (s *Server) doRemoveMember(w http.ResponseWriter, r *http.Request, teamID, memberID, userID string) error {
+	if _, err := s.pool.Exec(r.Context(), `UPDATE team_members SET left_at=now() WHERE id=$1`, memberID); err != nil {
 		return err
 	}
-	s.hub.SetTeam("user:"+*m.UserID, teamID, false)
-	s.hub.PublishTeam(teamID, "member.left", map[string]string{"member_id": m.ID})
-	s.hub.PublishPrincipal("user:"+*m.UserID, teamID, "team.removed", map[string]string{"team_id": teamID})
+	s.hub.SetTeam("user:"+userID, teamID, false)
+	s.hub.PublishTeam(teamID, "member.left", map[string]string{"member_id": memberID})
+	s.hub.PublishPrincipal("user:"+userID, teamID, "team.removed", map[string]string{"team_id": teamID})
 	w.WriteHeader(http.StatusNoContent)
 	return nil
+}
+
+// leaveTeam handles DELETE /teams/{team_id}/members/me.
+func (s *Server) leaveTeam(w http.ResponseWriter, r *http.Request) error {
+	teamID, a, err := s.teamIDParam(r)
+	if err != nil {
+		return err
+	}
+	if a.Role == "owner" {
+		return ownerCannotLeave()
+	}
+	return s.doRemoveMember(w, r, teamID, a.MemberID, principalFrom(r.Context()).UserID)
 }
 
 // ---------- channels ----------

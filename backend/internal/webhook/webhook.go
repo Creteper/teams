@@ -15,6 +15,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -152,22 +153,52 @@ type Delivery struct {
 	ID        string
 	BotID     string
 	MessageID *string
+	ChannelID *string
 	Event     string
 	Attempts  int // including the current one
+}
+
+// RunEvent describes a bot-run state change (bot.run.*).
+type RunEvent struct {
+	Type        string // delivered | retrying | failed
+	Attempt     int
+	NextRetryAt *time.Time
+	Reason      string
+	StatusCode  *int
+}
+
+// RunReason maps an ErrorClass to the public bot.run.failed reason.
+func RunReason(cls string) string {
+	switch {
+	case cls == "timeout":
+		return "timeout"
+	case cls == "blocked_address" || cls == "invalid_url":
+		return "invalid_url"
+	case strings.HasPrefix(cls, "http_"):
+		return "http_error"
+	case cls == "webhook_not_configured":
+		return "no_webhook"
+	case cls == "dropped":
+		return "message_deleted"
+	default:
+		return "network_error"
+	}
 }
 
 // BuildFunc renders the JSON body for a delivery.
 type BuildFunc func(ctx context.Context, d Delivery) ([]byte, error)
 
 type Worker struct {
-	Pool     *pgxpool.Pool
-	Box      *secretbox.Box
-	Client   *http.Client
-	Build    BuildFunc
-	Delays   []time.Duration // len(Delays)+1 = max attempts
-	Poll     time.Duration
-	Workers  int
-	Lease    time.Duration
+	Pool    *pgxpool.Pool
+	Box     *secretbox.Box
+	Client  *http.Client
+	Build   BuildFunc
+	Delays  []time.Duration // len(Delays)+1 = max attempts
+	Poll    time.Duration
+	Workers int
+	Lease   time.Duration
+	// Notify is called after a run state change of a message.mention delivery.
+	Notify   func(ctx context.Context, d Delivery, ev RunEvent)
 	wake     chan struct{}
 	initOnce sync.Once
 }
@@ -231,13 +262,13 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 			next_attempt_at = now() + make_interval(secs => $1)
 		WHERE id IN (SELECT id FROM webhook_deliveries WHERE status='pending' AND next_attempt_at <= now()
 			ORDER BY next_attempt_at LIMIT 5 FOR UPDATE SKIP LOCKED)
-		RETURNING id, bot_id, message_id, event, attempts`, w.Lease.Seconds())
+		RETURNING id, bot_id, message_id, channel_id, event, attempts`, w.Lease.Seconds())
 	if err != nil {
 		return 0, err
 	}
 	ds, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (Delivery, error) {
 		var d Delivery
-		err := r.Scan(&d.ID, &d.BotID, &d.MessageID, &d.Event, &d.Attempts)
+		err := r.Scan(&d.ID, &d.BotID, &d.MessageID, &d.ChannelID, &d.Event, &d.Attempts)
 		return d, err
 	})
 	if err != nil {
@@ -249,6 +280,23 @@ func (w *Worker) RunOnce(ctx context.Context) (int, error) {
 	return len(ds), nil
 }
 
+// setRun updates run_status unless the run already completed; returns
+// whether it changed (so events are not emitted after completion).
+func (w *Worker) setRun(ctx context.Context, d Delivery, runStatus, reason string) bool {
+	if d.MessageID == nil {
+		return false
+	}
+	tag, err := w.Pool.Exec(ctx, `UPDATE webhook_deliveries SET run_status=$2, run_reason=NULLIF($3,''), run_updated_at=now()
+		WHERE id=$1 AND run_status IS DISTINCT FROM 'completed'`, d.ID, runStatus, reason)
+	return err == nil && tag.RowsAffected() > 0
+}
+
+func (w *Worker) notify(ctx context.Context, d Delivery, ev RunEvent) {
+	if w.Notify != nil {
+		w.Notify(ctx, d, ev)
+	}
+}
+
 func (w *Worker) finish(ctx context.Context, id, status string, code *int, lastErr string) {
 	_, err := w.Pool.Exec(ctx, `UPDATE webhook_deliveries SET status=$2, last_status_code=$3, last_error=NULLIF($4,''),
 		finished_at = CASE WHEN $2='pending' THEN NULL ELSE now() END WHERE id=$1`, id, status, code, lastErr)
@@ -257,16 +305,24 @@ func (w *Worker) finish(ctx context.Context, id, status string, code *int, lastE
 	}
 }
 
+func (w *Worker) fail(ctx context.Context, d Delivery, code *int, cls string) {
+	w.finish(ctx, d.ID, "failed", code, cls)
+	reason := RunReason(cls)
+	if w.setRun(ctx, d, "failed", reason) {
+		w.notify(ctx, d, RunEvent{Type: "failed", Attempt: d.Attempts, Reason: reason, StatusCode: code})
+	}
+}
+
 func (w *Worker) process(ctx context.Context, d Delivery) {
 	t, err := LoadTarget(ctx, w.Pool, w.Box, d.BotID)
 	if err != nil || !t.Enabled {
-		w.finish(ctx, d.ID, "failed", nil, "webhook_not_configured")
+		w.fail(ctx, d, nil, "webhook_not_configured")
 		return
 	}
 	body, err := w.Build(ctx, d)
 	if err != nil {
 		if errors.Is(err, ErrDrop) {
-			w.finish(ctx, d.ID, "failed", nil, "dropped")
+			w.fail(ctx, d, nil, "dropped")
 		} else {
 			slog.Error("build webhook payload", "delivery", d.ID, "err", err)
 			w.retryOrFail(ctx, d, nil, "build_error", 0)
@@ -283,16 +339,19 @@ func (w *Worker) process(ctx context.Context, d Delivery) {
 	switch {
 	case res.OK():
 		w.finish(ctx, d.ID, "succeeded", code, "")
+		if w.setRun(ctx, d, "delivered", "") {
+			w.notify(ctx, d, RunEvent{Type: "delivered", Attempt: d.Attempts, StatusCode: code})
+		}
 	case res.Retryable():
 		w.retryOrFail(ctx, d, code, ErrorClass(res), res.RetryAfter)
 	default:
-		w.finish(ctx, d.ID, "failed", code, ErrorClass(res))
+		w.fail(ctx, d, code, ErrorClass(res))
 	}
 }
 
 func (w *Worker) retryOrFail(ctx context.Context, d Delivery, code *int, cls string, retryAfter time.Duration) {
 	if d.Attempts > len(w.Delays) {
-		w.finish(ctx, d.ID, "failed", code, cls)
+		w.fail(ctx, d, code, cls)
 		return
 	}
 	delay := w.Delays[d.Attempts-1]
@@ -300,9 +359,15 @@ func (w *Worker) retryOrFail(ctx context.Context, d Delivery, code *int, cls str
 	if retryAfter > delay {
 		delay = retryAfter
 	}
+	next := time.Now().Add(delay)
 	_, err := w.Pool.Exec(ctx, `UPDATE webhook_deliveries SET status='pending', last_status_code=$2, last_error=$3,
-		next_attempt_at = now() + make_interval(secs => $4) WHERE id=$1`, d.ID, code, cls, delay.Seconds())
+		next_attempt_at = $4 WHERE id=$1`, d.ID, code, cls, next)
 	if err != nil {
 		slog.Error("schedule retry", "id", d.ID, "err", err)
+		return
+	}
+	reason := RunReason(cls)
+	if w.setRun(ctx, d, "retrying", reason) {
+		w.notify(ctx, d, RunEvent{Type: "retrying", Attempt: d.Attempts, NextRetryAt: &next, Reason: reason, StatusCode: code})
 	}
 }

@@ -34,6 +34,7 @@ func (s *Server) routes() {
 	h("GET "+v+"/teams/{team_id}/members", anyAuth, s.listMembers)
 	h("POST "+v+"/teams/{team_id}/members", userOnly, s.addMember)
 	h("PATCH "+v+"/teams/{team_id}/members/{member_id}", userOnly, s.patchMember)
+	h("DELETE "+v+"/teams/{team_id}/members/me", userOnly, s.leaveTeam)
 	h("DELETE "+v+"/teams/{team_id}/members/{member_id}", userOnly, s.removeMember)
 
 	h("POST "+v+"/teams/{team_id}/invites", userOnly, s.createInvite)
@@ -50,6 +51,7 @@ func (s *Server) routes() {
 
 	h("GET "+v+"/channels/{channel_id}/messages", anyAuth, s.listMessages)
 	h("POST "+v+"/channels/{channel_id}/messages", anyAuth, s.sendMessage)
+	h("GET "+v+"/channels/{channel_id}/bot-runs", anyAuth, s.listBotRuns)
 	h("GET "+v+"/messages/{message_id}", anyAuth, s.getMessage)
 	h("PATCH "+v+"/messages/{message_id}", anyAuth, s.editMessage)
 	h("DELETE "+v+"/messages/{message_id}", anyAuth, s.deleteMessage)

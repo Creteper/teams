@@ -146,7 +146,9 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	msgID := newID()
-	enqueued := false
+	var runs []runAnnounce
+	var completed []string
+	var replyToID string
 	var dupID string
 	err = pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
 		if clientID != nil {
@@ -202,7 +204,13 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) error {
 				return apierr.Validation("attachment_ids", "附件不存在、不是你上传的或已被其他消息引用")
 			}
 		}
-		enqueued, err = s.enqueueMentionWebhooks(ctx, tx, msgID, c.ID, a.MemberID, depth, mentions)
+		if p.Bot != nil && replyTo != nil {
+			replyToID = *replyTo
+			if completed, err = completeRuns(ctx, tx, a.MemberID, *replyTo, msgID); err != nil {
+				return err
+			}
+		}
+		runs, err = s.enqueueMentionWebhooks(ctx, tx, msgID, c.ID, a.MemberID, depth, mentions)
 		return err
 	})
 	if err != nil {
@@ -215,14 +223,21 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) error {
 		}
 		return writeJSON(w, http.StatusOK, m)
 	}
-	if enqueued {
-		s.worker.Wake()
-	}
 	m, err := s.loadMessage(ctx, s.pool, msgID)
 	if err != nil {
 		return err
 	}
 	s.hub.PublishTeam(c.TeamID, "message.created", m)
+	for _, did := range completed {
+		s.hub.PublishTeam(c.TeamID, "bot.run.completed", runData(c.TeamID, c.ID, a.MemberID, replyToID, did, map[string]any{"reply_message_id": msgID}))
+	}
+	s.publishRuns(c.TeamID, c.ID, msgID, runs)
+	for _, r := range runs {
+		if r.Type == "started" {
+			s.worker.Wake()
+			break
+		}
+	}
 	return writeJSON(w, http.StatusCreated, m)
 }
 
@@ -234,55 +249,80 @@ func (s *Server) findClientMsg(ctx context.Context, q querier, memberID, channel
 	return id, err == nil
 }
 
+type mentionedBot struct {
+	ID, MemberID string
+	HasHook      bool
+}
+
 // enqueueMentionWebhooks applies the loop guard and inserts deliveries.
-// Returns true if any delivery is pending.
-func (s *Server) enqueueMentionWebhooks(ctx context.Context, tx pgx.Tx, msgID, channelID, senderMemberID string, depth int, mentions []string) (bool, error) {
+// Returns the bot runs to announce after commit.
+func (s *Server) enqueueMentionWebhooks(ctx context.Context, tx pgx.Tx, msgID, channelID, senderMemberID string, depth int, mentions []string) ([]runAnnounce, error) {
 	if len(mentions) == 0 {
-		return false, nil
+		return nil, nil
 	}
-	rows, err := tx.Query(ctx, `SELECT b.id FROM bots b JOIN bot_webhooks w ON w.bot_id=b.id
-		WHERE b.member_id = ANY($1::uuid[]) AND b.deleted_at IS NULL AND w.enabled AND b.member_id <> $2`, mentions, senderMemberID)
+	rows, err := tx.Query(ctx, `SELECT b.id, b.member_id, COALESCE(w.enabled, false) FROM bots b LEFT JOIN bot_webhooks w ON w.bot_id=b.id
+		WHERE b.member_id = ANY($1::uuid[]) AND b.deleted_at IS NULL AND b.member_id <> $2`, mentions, senderMemberID)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	bots, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	bots, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (mentionedBot, error) {
+		var b mentionedBot
+		err := r.Scan(&b.ID, &b.MemberID, &b.HasHook)
+		return b, err
+	})
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	pending := false
-	for _, botID := range bots {
+	var runs []runAnnounce
+	for _, mb := range bots {
+		botID := mb.ID
 		status := "pending"
 		var lastErr *string
 		if depth > s.cfg.MaxTriggerDepth {
 			status = "skipped_depth"
+		} else if !mb.HasHook {
+			status = "failed"
 		} else {
 			if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "wh:"+botID+":"+channelID); err != nil {
-				return false, err
+				return nil, err
 			}
 			var n int
 			if err := tx.QueryRow(ctx, `SELECT count(*) FROM webhook_deliveries WHERE bot_id=$1 AND channel_id=$2
-				AND created_at > now() - interval '60 seconds' AND status NOT IN ('skipped_depth','skipped_rate_limited')`, botID, channelID).Scan(&n); err != nil {
-				return false, err
+				AND created_at > now() - interval '60 seconds' AND status NOT IN ('skipped_depth','skipped_rate_limited')
+				AND COALESCE(last_error,'') <> 'no_webhook'`, botID, channelID).Scan(&n); err != nil {
+				return nil, err
 			}
 			if s.cfg.WebhookRatePerMinute > 0 && n >= s.cfg.WebhookRatePerMinute {
 				status = "skipped_rate_limited"
 			}
 		}
-		if status != "pending" {
+		var runStatus, runReason *string
+		switch status {
+		case "pending":
+			v := "started"
+			runStatus = &v
+		case "failed":
+			e, v, rr := "no_webhook", "failed", "no_webhook"
+			lastErr, runStatus, runReason = &e, &v, &rr
+		default:
 			e := status
 			lastErr = &e
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO webhook_deliveries(id, bot_id, message_id, channel_id, event, status, last_error, finished_at)
-			VALUES($1,$2,$3,$4,'message.mention',$5,$6, CASE WHEN $5='pending' THEN NULL ELSE now() END)`,
-			newID(), botID, msgID, channelID, status, lastErr)
+		id := newID()
+		_, err := tx.Exec(ctx, `INSERT INTO webhook_deliveries(id, bot_id, message_id, channel_id, event, status, last_error, finished_at, run_status, run_reason)
+			VALUES($1,$2,$3,$4,'message.mention',$5,$6, CASE WHEN $5='pending' THEN NULL ELSE now() END, $7, $8)`,
+			id, botID, msgID, channelID, status, lastErr, runStatus, runReason)
 		if err != nil {
-			return false, err
+			return nil, err
 		}
-		if status == "pending" {
-			pending = true
+		switch status {
+		case "pending":
+			runs = append(runs, runAnnounce{DeliveryID: id, BotMemberID: mb.MemberID, Type: "started"})
+		case "failed":
+			runs = append(runs, runAnnounce{DeliveryID: id, BotMemberID: mb.MemberID, Type: "failed", Reason: "no_webhook"})
 		}
 	}
-	return pending, nil
+	return runs, nil
 }
 
 func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) error {
