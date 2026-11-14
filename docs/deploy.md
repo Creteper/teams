@@ -499,33 +499,34 @@ umask 077
 TS=$(date +%Y%m%d-%H%M%S)
 DIR=/var/backups/teams
 KEEP_DAYS=14
-
-# 1) 数据库：本机 peer 认证，不需要口令
-# 由 root 重定向输出：postgres 用户写不进 root 700 的 $DIR
+# 1) 数据库：由 root 重定向输出（postgres 用户写不进 root 700 的 $DIR）
 sudo -u postgres pg_dump -Fc -d teams > "$DIR/teams-db-$TS.dump"
-
 # 2) 上传目录
 tar -C /var/lib/teams -czf "$DIR/teams-uploads-$TS.tar.gz" uploads
-
 # 3) 本地保留 14 天
-find "$DIR" -type f -mtime +$KEEP_DAYS -delete
-
-# 4) 异地：上传到阿里云 OSS（只传本次的两个文件）
-#    存储桶 lovekaifa（cn-beijing，内网 endpoint），前缀 teams-backups/。
-#    凭据：/etc/teams/backup-oss.env（root，600），内容复制自服务器上爱开发的
-#    /opt/lovekaifa/shared/aliyun-credentials.env（变量 ALIBABA_CLOUD_ACCESS_KEY_ID / _SECRET），通过环境变量交给 ossutil。
-#    ⚠️ 存储桶本身是 public-read，必须带 --acl private，否则备份会被匿名读到。
-#    上传失败只记告警，不让整次备份失败（本机备份已完成）。
-#    下面是结构示意，具体的环境变量映射和 ossutil 参数以服务器上实际的 /usr/local/bin/teams-backup.sh 为准。
-OSS_DEST="oss://lovekaifa/teams-backups/"
-if [ -f /etc/teams/backup-oss.env ] && command -v ossutil >/dev/null; then
-  ( set -a; . /etc/teams/backup-oss.env; set +a
+find "$DIR" -maxdepth 1 -type f -name 'teams-*' -mtime +$KEEP_DAYS -delete
+# 4) 异地：只传本次的两个文件到 oss://lovekaifa/teams-backups/，必须 --acl private（存储桶本身是 public-read）
+OSS_BUCKET="oss://lovekaifa/teams-backups/"   # empty = local only
+OSS_ENV=/etc/teams/backup-oss.env
+if [ -n "$OSS_BUCKET" ]; then
+  if command -v ossutil >/dev/null && [ -f "$OSS_ENV" ]; then
+    set -a; . "$OSS_ENV"; set +a
     for f in "$DIR/teams-db-$TS.dump" "$DIR/teams-uploads-$TS.tar.gz"; do
-      ossutil cp "$f" "$OSS_DEST" --acl private --region cn-beijing \
-        --endpoint oss-cn-beijing-internal.aliyuncs.com || echo "WARN: OSS upload failed: $f" >&2
-    done ) || true
+      ossutil cp "$f" "${OSS_BUCKET%/}/$(basename "$f")" --acl private -f >/dev/null || echo "WARN: OSS upload failed: $(basename "$f")" >&2
+    done
+    unset OSS_ACCESS_KEY_ID OSS_ACCESS_KEY_SECRET
+  else
+    echo "WARN: OSS not configured (ossutil or $OSS_ENV missing); local backup only" >&2
+  fi
 fi
+echo "backup ok: $TS"
 ```
+
+OSS 配置（线上实际）：
+- ossutil：官方 2.4.1 二进制，`/usr/local/bin/ossutil`（安装时核对哈希）。
+- 存储桶 `lovekaifa`，地域 cn-beijing，内网 endpoint，前缀 `teams-backups/`；不碰爱开发的 `uploads/` 等目录。
+- 凭据：`/etc/teams/backup-oss.env`（root，600），变量 `OSS_ACCESS_KEY_ID`、`OSS_ACCESS_KEY_SECRET`、`OSS_REGION=cn-beijing` 和内网 endpoint；值取自服务器上爱开发的 `/opt/lovekaifa/shared/aliyun-credentials.env`（`ALIBABA_CLOUD_ACCESS_KEY_ID` / `_SECRET`），只在服务器上用脚本复制，不进文档、提交和聊天。
+- 上传失败只打告警，不影响本机备份。
 上传后用 `ossutil stat oss://lovekaifa/teams-backups/<文件名>` 确认 ACL 是 private，匿名访问应返回 403。`teams-backups/` 的 OSS 生命周期规则（自动清理旧备份）要改存储桶设置，**待用户决定**，目前未配置。
 
 `/etc/systemd/system/teams-backup.service` 与 `.timer`：
@@ -542,7 +543,7 @@ ExecStart=/usr/local/bin/teams-backup.sh
 Description=Daily TeAms backup
 [Timer]
 OnCalendar=*-*-* 03:30:00
-RandomizedDelaySec=10m
+RandomizedDelaySec=10min
 Persistent=true
 [Install]
 WantedBy=timers.target
