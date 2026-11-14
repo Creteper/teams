@@ -150,8 +150,9 @@ const FAIL_TEXT: Record<string, string> = {
   message_deleted: "触发消息已被删除",
 };
 
-/** 提示文案 */
-export function botRunText(run: BotRun, botName: string): string {
+/** 提示文案；technical=false（普通成员）时失败只显示“暂时无法响应”，不暴露 no_webhook 等技术原因 */
+export function botRunText(run: BotRun, botName: string, opts: { technical?: boolean } = {}): string {
+  const technical = opts.technical ?? true;
   switch (run.phase) {
     case "optimistic":
     case "started":
@@ -162,6 +163,7 @@ export function botRunText(run: BotRun, botName: string): string {
     case "timeout":
       return `${botName} 暂时没有回复`;
     case "failed": {
+      if (!technical) return `${botName} 暂时无法响应`;
       const base = FAIL_TEXT[run.reason ?? ""] ?? "处理失败";
       const code = run.reason === "http_error" && run.status_code ? `（HTTP ${run.status_code}）` : "";
       return `${botName} 处理失败：${base}${code}`;

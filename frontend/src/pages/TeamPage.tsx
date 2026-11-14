@@ -381,11 +381,17 @@ export default function TeamPage() {
               }}
               onDiscard={(localId) => setOutbox((prev) => prev.filter((o) => o.local_id !== localId))}
             />
+            {/* bot 状态区：消息列表和输入框之间单独一行，处于正常文档流；出现时列表通过 ResizeObserver 贴底 */}
+            <BotRunBar
+              runs={channelRuns}
+              members={members}
+              showTechnicalReason={canManage}
+              onDismiss={(key) => dispatchRuns({ type: "dismiss", key })}
+            />
             <Composer
               key={channel.id}
               channelName={channel.name}
               members={members.filter((m) => m.id !== myMemberId)}
-              status={<BotRunBar runs={channelRuns} members={members} onDismiss={(key) => dispatchRuns({ type: "dismiss", key })} />}
               onUpload={(file, opts) => api.uploadAttachment(token, teamId, file, opts)}
               onSend={({ content, attachments, mentionIds }) => {
                 const item: OutboxItem = {

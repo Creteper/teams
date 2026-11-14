@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Button, Input } from "@heroui/react";
+import { Button, Input, Label, ListBox, Select, type Key } from "@heroui/react";
+import { ConfirmDialog, useEscapeClose } from "./ui";
 import { api } from "../api";
 import type { Invite, Member, Team } from "../api/types";
 import {
@@ -23,8 +24,45 @@ function fmt(iso: string | null): string {
   return new Date(iso).toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 }
 
-const selectClass =
-  "w-full rounded-md bg-[#1e1f22] px-3 py-2 text-sm text-[#dbdee1] outline-none ring-1 ring-black/40 focus:ring-brand";
+/** HeroUI v3 Select（React Aria：方向键/回车/Esc/首字母跳转），选项 id 用下标字符串 */
+function OptionSelect({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: { label: string }[];
+  value: number;
+  onChange(index: number): void;
+}) {
+  return (
+    <Select
+      className="w-full"
+      variant="secondary"
+      value={String(value)}
+      onChange={(k: Key | Key[] | null) => {
+        if (k !== null && !Array.isArray(k)) onChange(Number(k));
+      }}
+    >
+      <Label className="mb-1 block text-sm text-[#b5bac1]">{label}</Label>
+      <Select.Trigger>
+        <Select.Value />
+        <Select.Indicator />
+      </Select.Trigger>
+      <Select.Popover>
+        <ListBox aria-label={label}>
+          {options.map((o, i) => (
+            <ListBox.Item key={o.label} id={String(i)} textValue={o.label}>
+              {o.label}
+              <ListBox.ItemIndicator />
+            </ListBox.Item>
+          ))}
+        </ListBox>
+      </Select.Popover>
+    </Select>
+  );
+}
 
 /** 邀请成员弹窗（owner/admin）：生成邀请链接、管理已有邀请、按用户名添加成员 */
 export function InviteDialog({
@@ -47,6 +85,9 @@ export function InviteDialog({
   const [error, setError] = useState<string | null>(null);
   const [username, setUsername] = useState("");
   const [addMsg, setAddMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [confirmRevoke, setConfirmRevoke] = useState<Invite | null>(null);
+  const [revoking, setRevoking] = useState(false);
   const linkRef = useRef<HTMLInputElement>(null);
   const origin = location.origin;
 
@@ -94,13 +135,30 @@ export function InviteDialog({
     }
   }
 
+  /** 已有邀请的“复制”：完整链接 = location.origin + url_path */
+  async function copyExisting(inv: Invite) {
+    const url = inviteUrl(inv, origin);
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedId(inv.id);
+      setTimeout(() => setCopiedId((id) => (id === inv.id ? null : id)), 2000);
+    } catch {
+      setError(`无法自动复制，请手动复制：${url}`);
+    }
+  }
+
   async function revoke(inv: Invite) {
+    setRevoking(true);
     try {
       await api.revokeInvite(token, team.id, inv.id);
       await reload();
       if (created?.id === inv.id) setCreated(null);
+      setConfirmRevoke(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      setConfirmRevoke(null);
+    } finally {
+      setRevoking(false);
     }
   }
 
@@ -118,12 +176,8 @@ export function InviteDialog({
 
   const link = created ? inviteUrl(created, origin) : "";
 
-  // Esc 关闭
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  // Esc 关闭（下拉框打开时先收起下拉框；作废确认框在上层时只关确认框）
+  useEscapeClose(onClose);
 
   return (
     <div
@@ -146,26 +200,8 @@ export function InviteDialog({
         <section className="mb-6">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[#949ba4]">生成邀请链接</h3>
           <div className="grid grid-cols-2 gap-3">
-            <label className="text-sm">
-              <span className="mb-1 block text-[#b5bac1]">有效期</span>
-              <select className={selectClass} value={expiryIdx} onChange={(e) => setExpiryIdx(Number(e.target.value))}>
-                {EXPIRY_OPTIONS.map((o, i) => (
-                  <option key={o.label} value={i}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="text-sm">
-              <span className="mb-1 block text-[#b5bac1]">使用次数</span>
-              <select className={selectClass} value={usesIdx} onChange={(e) => setUsesIdx(Number(e.target.value))}>
-                {MAX_USES_OPTIONS.map((o, i) => (
-                  <option key={o.label} value={i}>
-                    {o.label}
-                  </option>
-                ))}
-              </select>
-            </label>
+            <OptionSelect label="有效期" options={EXPIRY_OPTIONS} value={expiryIdx} onChange={setExpiryIdx} />
+            <OptionSelect label="使用次数" options={MAX_USES_OPTIONS} value={usesIdx} onChange={setUsesIdx} />
           </div>
           <div className="mt-3">
             <Button variant="primary" isPending={busy} onPress={() => void create()}>
@@ -214,9 +250,14 @@ export function InviteDialog({
                   </div>
                   <span className={`rounded px-1.5 py-0.5 text-xs ${STATUS_CLASS[status]}`}>{INVITE_STATUS_TEXT[status]}</span>
                   {status === "active" ? (
-                    <Button size="sm" variant="danger-soft" onPress={() => void revoke(inv)}>
-                      作废
-                    </Button>
+                    <>
+                      <Button size="sm" variant="secondary" onPress={() => void copyExisting(inv)} aria-label={`复制邀请链接 ${inv.code}`}>
+                        {copiedId === inv.id ? "已复制" : "复制"}
+                      </Button>
+                      <Button size="sm" variant="danger-soft" onPress={() => setConfirmRevoke(inv)}>
+                        作废
+                      </Button>
+                    </>
                   ) : null}
                 </li>
               );
@@ -245,6 +286,20 @@ export function InviteDialog({
             <p className={`mt-1 text-xs ${addMsg.ok ? "text-[#57f287]" : "text-[#f23f43]"}`}>{addMsg.text}</p>
           ) : null}
         </section>
+        {confirmRevoke ? (
+          <ConfirmDialog
+            title="作废邀请链接"
+            message={
+              <>
+                作废后 <span className="font-mono text-[#f2f3f5]">{confirmRevoke.url_path}</span> 将立即失效，已经加入的成员不受影响。确定作废吗？
+              </>
+            }
+            confirmText="作废"
+            pending={revoking}
+            onConfirm={() => void revoke(confirmRevoke)}
+            onCancel={() => setConfirmRevoke(null)}
+          />
+        ) : null}
       </div>
     </div>
   );

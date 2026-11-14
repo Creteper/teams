@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 import type { Attachment, Member } from "../api/types";
 import type { UploadOptions } from "../api/client";
 import {
@@ -27,18 +27,15 @@ interface PendingUpload {
   controller: AbortController;
 }
 
-/** 底部输入框：附件（上传进度 + 取消）、@ 补全弹层（键盘导航、无匹配提示），上方可挂 bot 处理状态条 */
+/** 底部输入框：附件（上传进度 + 取消，卡片在输入框内部占位，不浮在消息上）、@ 补全弹层（键盘导航、无匹配提示） */
 export function Composer({
   channelName,
   members,
-  status,
   onUpload,
   onSend,
 }: {
   channelName: string;
   members: Member[];
-  /** 输入框上方的状态区（如“Grok 正在处理…”） */
-  status?: ReactNode;
   onUpload(file: File, opts: UploadOptions): Promise<Attachment>;
   /** 发送交给外层（乐观显示 + 失败重发），这里调用后立即清空输入 */
   onSend(payload: ComposerSendPayload): void;
@@ -183,8 +180,6 @@ export function Composer({
           )}
         </div>
       ) : null}
-
-      {status}
 
       {hasTray ? (
         <div className="flex flex-wrap gap-2 rounded-t-lg bg-[#383a40] p-3">

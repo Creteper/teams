@@ -1,6 +1,32 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import { Button } from "@heroui/react";
 
+/**
+ * Esc 关闭弹窗：只关最上层（嵌套确认框时不连带关闭外层）；
+ * 下拉框（Select / ListBox 弹层）打开时 Esc 先交给它收起。
+ */
+const escStack: { current: () => void }[] = [];
+export function useEscapeClose(onClose: () => void) {
+  const ref = useRef(onClose);
+  ref.current = onClose;
+  useEffect(() => {
+    const entry = { current: () => ref.current() };
+    escStack.push(entry);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (escStack[escStack.length - 1] !== entry) return;
+      if (document.querySelector("[data-teams-popover-open], .select__popover, [role=listbox][data-open]")) return;
+      entry.current();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      const i = escStack.indexOf(entry);
+      if (i >= 0) escStack.splice(i, 1);
+    };
+  }, []);
+}
+
 /** 通用弹窗外壳（点遮罩 / Esc 关闭） */
 export function DialogShell({
   label,
@@ -15,11 +41,7 @@ export function DialogShell({
   children: ReactNode;
   width?: string;
 }) {
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  useEscapeClose(onClose);
   return (
     <div
       role="dialog"

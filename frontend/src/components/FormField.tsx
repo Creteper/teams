@@ -1,17 +1,29 @@
 import { useState, type ReactNode } from "react";
-import { Input, Label } from "@heroui/react";
+import { Input, Label, TextField } from "@heroui/react";
 import { EyeIcon } from "./ui";
 
-/** 表单字段：标签 + 输入 + 说明，统一间距 */
-export function Field({ id, label, hint, children }: { id: string; label: ReactNode; hint?: ReactNode; children: ReactNode }) {
+/** 表单字段：标签 + 输入 + 说明，统一间距；invalid 时用 HeroUI TextField 的 invalid 状态给输入框标红 */
+export function Field({
+  id,
+  label,
+  hint,
+  invalid = false,
+  children,
+}: {
+  id: string;
+  label: ReactNode;
+  hint?: ReactNode;
+  invalid?: boolean;
+  children: ReactNode;
+}) {
   return (
-    <div className="flex flex-col gap-1.5">
+    <TextField isInvalid={invalid} className="flex flex-col gap-1.5" data-field={id}>
       <Label htmlFor={id} className="text-xs font-semibold uppercase tracking-wide text-[#b5bac1]">
         {label}
       </Label>
       {children}
       {hint ? <p className="text-xs text-[#949ba4]">{hint}</p> : null}
-    </div>
+    </TextField>
   );
 }
 

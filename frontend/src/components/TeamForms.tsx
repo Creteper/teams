@@ -74,14 +74,14 @@ export function JoinByInviteForm({ onGo }: { onGo?(): void }) {
       onSubmit={(e) => {
         e.preventDefault();
         const code = parseInviteInput(value);
-        if (!code) return setError("请粘贴有效的邀请链接，例如 http://…/invite/AbC123");
+        if (!code) return setError("请粘贴有效的邀请链接（…/invite/邀请码）或邀请码");
         onGo?.();
         navigate(`/invite/${code}`);
       }}
     >
       <p className="text-sm text-[#b5bac1]">收到了邀请链接？粘贴到这里查看并加入。</p>
       <Field id="invite-input" label="邀请链接或邀请码">
-        <Input id="invite-input" placeholder="http://localhost:5190/invite/AbC123" value={value} onChange={(e) => setValue(e.target.value)} />
+        <Input id="invite-input" placeholder="粘贴邀请链接或邀请码" value={value} onChange={(e) => setValue(e.target.value)} />
       </Field>
       {error ? <FormError>{error}</FormError> : null}
       <div className="flex justify-end">

@@ -82,3 +82,22 @@ describe("botRunsReducer", () => {
     expect(s.d1.startedAt).toBe(500); // 90 秒兜底从投递开始算
   });
 });
+
+describe("按角色显示失败文案", () => {
+  const failed = botRunsReducer({}, {
+    type: "event",
+    event: "failed",
+    data: { team_id: "t", channel_id: "c", bot_member_id: "b", trigger_message_id: "m", delivery_id: "d", at: "", reason: "no_webhook" },
+    now: 0,
+  }).d;
+  it("所有者/管理员看到技术原因", () => {
+    expect(botRunText(failed, "DeployBot", { technical: true })).toBe("DeployBot 处理失败：未配置接收地址（webhook）");
+  });
+  it("普通成员只看到“暂时无法响应”", () => {
+    expect(botRunText(failed, "DeployBot", { technical: false })).toBe("DeployBot 暂时无法响应");
+  });
+  it("非失败状态两种角色文案一致", () => {
+    const run = { ...failed, phase: "delivered" as const };
+    expect(botRunText(run, "Grok", { technical: false })).toBe(botRunText(run, "Grok", { technical: true }));
+  });
+});

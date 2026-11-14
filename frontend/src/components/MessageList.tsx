@@ -4,6 +4,7 @@ import { parseContent } from "../lib/mention";
 import { formatTime, groupMessages } from "../lib/messages";
 import type { OutboxItem } from "../lib/outbox";
 import { BotBadge, MemberAvatar } from "./MemberAvatar";
+import { useStickToBottom } from "./useStickToBottom";
 
 interface Row {
   key: string;
@@ -65,12 +66,9 @@ export function MessageList({
   onRetrySend?(localId: string): void;
   onDiscard?(localId: string): void;
 }) {
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const stickRef = useRef(true);
-  const stick = () => {
-    if (stickRef.current) bottomRef.current?.scrollIntoView({ block: "end" });
-  };
+  // 贴底：内容变高或可视区变矮（状态条、上传卡片）时，原本在底部就跟到底
+  const { scrollRef, contentRef, atBottomRef: stickRef, onScroll: trackScroll, stickIfNeeded: stick, scrollToBottom } =
+    useStickToBottom();
   const [preview, setPreview] = useState<Attachment | null>(null);
   const byId = useMemo(() => new Map(members.map((m) => [m.id, m])), [members]);
   const groups = useMemo(() => groupMessages(messages), [messages]);
@@ -90,7 +88,11 @@ export function MessageList({
 
   useEffect(() => {
     stick();
-  }, [messages.length, outbox.length, initialLoading]);
+  }, [messages.length, outbox.length, stick]);
+  // 进入频道 / 首屏加载完成：无条件到底
+  useEffect(() => {
+    if (!initialLoading) scrollToBottom();
+  }, [initialLoading, channel.id, scrollToBottom]);
 
   function renderGroup(rows: Row[]): ReactNode {
     const first = rows[0];
@@ -209,11 +211,12 @@ export function MessageList({
       aria-busy={initialLoading}
       onScroll={(e) => {
         const el = e.currentTarget;
-        stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+        trackScroll();
         prevHeightRef.current = el.scrollHeight;
         if (el.scrollTop < 120 && hasMore && !loadingOlder) onLoadOlder?.();
       }}
     >
+      <div ref={contentRef}>
       {initialLoading ? (
         <MessageSkeleton />
       ) : hasMore ? (
@@ -231,7 +234,7 @@ export function MessageList({
       )}
       {!initialLoading ? groups.map((g) => renderGroup(g.map(toRow))) : null}
       {outboxRows.length ? renderGroup(outboxRows) : null}
-      <div ref={bottomRef} />
+      </div>
 
       {preview ? (
         <div
