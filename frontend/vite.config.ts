@@ -23,7 +23,8 @@ export default defineConfig({
     },
   },
   test: {
-    environment: "node",
-    include: ["src/**/*.test.ts"],
+    // jsdom：BotAvatar 组件测试需要 DOM；纯逻辑测试在 jsdom 下同样可跑
+    environment: "jsdom",
+    include: ["src/**/*.test.{ts,tsx}"],
   },
 });

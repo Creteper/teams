@@ -1,5 +1,6 @@
 import { Avatar } from "@heroui/react";
 import { avatarMode, type AvatarSource } from "../lib/avatar";
+import { BotAvatar } from "./BotAvatar";
 
 export function initials(name: string): string {
   const trimmed = name.trim();
@@ -17,17 +18,19 @@ export function colorOf(seed: string): string {
 }
 
 /** 统一头像组件：成员列表、消息、@ 候选、个人栏都用它 */
-export function MemberAvatar({ member, size = 40 }: { member: AvatarSource; size?: number }) {
+export function MemberAvatar({ member, size = 40 }: { member: AvatarSource & { member_id?: string; id?: string }; size?: number }) {
   const mode = avatarMode(member);
   if (mode === "procedural") {
-    // TODO: 替换为 BotAvatar（程序化 bot 头像组件，另行实现）；这里先按 avatar_color 填色的圆占位
+    // 程序化 bot 头像（shape/color 由 BotAvatar 内部 trim + 忽略大小写解析，未知值回退默认）
     return (
-      <span
-        role="img"
-        aria-label={member.display_name}
-        data-avatar-shape={member.avatar_shape ?? undefined}
-        className="inline-block shrink-0 rounded-full ring-1 ring-white/20"
-        style={{ width: size, height: size, backgroundColor: member.avatar_color ?? "#5865f2" }}
+      <BotAvatar
+        shape={member.avatar_shape ?? ""}
+        color={member.avatar_color ?? ""}
+        seed={member.member_id ?? member.id}
+        colorScheme="dark"
+        size={size}
+        title={member.display_name}
+        className="shrink-0"
       />
     );
   }
