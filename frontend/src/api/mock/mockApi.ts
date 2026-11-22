@@ -1,3 +1,4 @@
+import { mockIssues } from "./issues";
 import type { TeamsApi } from "../client";
 import { ApiError } from "../errors";
 import type { Attachment, AuthResponse, Channel, ChannelUserState, Invite, Member, Message, Page, Team, User } from "../types";
@@ -181,6 +182,7 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
   }
 
   return {
+    ...mockIssues(db, token => authed(token).id, (token, teamId) => requireMember(authed(token), teamId)),
     async previewInvite(code) {
       await delay();
       const invite = findInvite(code);
@@ -556,10 +558,10 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
       const base = "http://localhost:5190/api/v1";
       const info = {
         name: "teams-skill",
-        version: "1.0.0",
+        version: "1.1.0",
         install_command: `npx -y ${base}/downloads/teams-skill.tgz`,
         tgz_url: `${base}/downloads/teams-skill.tgz`,
-        versioned_url: `${base}/downloads/teams-skill-1.0.0.tgz`,
+        versioned_url: `${base}/downloads/teams-skill-1.1.0.tgz`,
         skill_md_url: `${base}/skill/SKILL.md`,
         sha256: "0".repeat(64),
         size_bytes: 12994,
@@ -687,12 +689,34 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
       return { items: list, has_more, next_cursor };
     },
 
+    async answerQA(token, id, {question, choice, text}) {
+      const msg = await this.getMessage(token, id);
+      const card = msg.qa_card;
+      if (!card || msg.deleted) throw err(404, "not_found", "QA 卡片不存在");
+      if (card.recipient_member_id !== requireMember(authed(token), msg.team_id).id) throw err(403, "forbidden", "只有绑定人可以回答");
+      const q = card.questions[question];
+      if (!q || !(choice === "skip" || (choice === "other" ? text?.trim() && text.trim().length <= 2000 : q.options.some((_, i) => choice === "ABCD"[i])))) throw err(400, "validation_failed", "答案无效");
+      const answer = choice === "other" ? { choice, text: text!.trim() } : { choice };
+      if (q.answer?.choice === choice && q.answer.text === answer.text) return msg;
+      if (q.answer && q.answer.choice !== "skip") throw err(409, "conflict", "该题已回答");
+      const next = { ...msg, qa_card: { ...card, revision: card.revision+1, questions: card.questions.map((item,i)=>i===question ? {...item, answer} : item) } };
+      db.messages[db.messages.indexOf(msg)] = next;
+      emit(db, { type: "message.updated", team_id: msg.team_id, data: next });
+      return next;
+    },
+
     async sendMessage(token, channelId, input) {
       await delay();
       const user = authed(token);
       const channel = db.channels.get(channelId);
       if (!channel) throw err(404, "not_found", "频道不存在");
       const me = requireMember(user, channel.team_id);
+      const qa = input.qa_card;
+      if (qa) {
+        if (!db.members.some(m => m.team_id === channel.team_id && m.id === qa.recipient_member_id) || !qa.questions.length || qa.questions.length > 64
+          || qa.questions.some(q => !q.prompt.trim() || q.prompt.length > 500 || q.options.length > 4 || q.options.some(o => !o.trim() || o.trim() === "其他" || o.length > 160))) throw err(400,"validation_failed","请检查回答人、问题和选项");
+        input = {...input,content: `<@${qa.recipient_member_id}> QA 卡片 · ${qa.questions[0].prompt}`};
+      }
       if (!input.content.trim() && input.attachment_ids.length === 0) {
         throw err(400, "validation_failed", "content 和 attachment_ids 不能同时为空", { field: "content" });
       }
@@ -730,7 +754,8 @@ export function createMockApi(db: MockDb, opts: { latencyMs?: number } = {}): Te
         sender: senderOf(me),
         kind: "message",
         content: input.content,
-        mentions,
+        mentions: qa ? mentions.filter(x => x.member_id===qa.recipient_member_id) : mentions,
+        qa_card: qa && {...qa,revision:0},
         attachments,
         reply_to: input.reply_to ?? null,
         trigger_depth: 0,

@@ -1,6 +1,6 @@
 {
   "name": "teams-skill",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "description": "Install the TeAms bot integration skill (teams-bot-integration/SKILL.md) into ./.cursor/skills",
   "private": true,
   "license": "UNLICENSED",

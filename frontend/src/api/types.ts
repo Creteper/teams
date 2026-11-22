@@ -177,7 +177,7 @@ export interface PushSubscriptionRecord {
 
 /** Service Worker 收到的推送载荷（§9.4） */
 export interface PushPayload {
-  type: "mention";
+  type: "mention" | "message";
   tag: string;
   team: { id: ID; name: string };
   channel: { id: ID; name: string };
@@ -266,7 +266,24 @@ export interface UpdateMeInput {
 /** §5.2：普通消息或 bot 声明不回复的提示（§7.7） */
 export type MessageKind = "message" | "bot_declined";
 
+export interface QAAnswer {
+  choice: "A" | "B" | "C" | "D" | "other" | "skip";
+  text?: string;
+}
+export interface QAQuestion {
+  prompt: string;
+  options: string[];
+  answer?: QAAnswer;
+}
+export interface QACard {
+  recipient_member_id: ID;
+  questions: QAQuestion[];
+  revision: number;
+}
+export type NewQACard = { recipient_member_id: ID; questions: Pick<QAQuestion, "prompt" | "options">[] };
+
 export interface Message {
+  qa_card?: QACard;
   id: ID;
   seq: number;
   /** 旧数据可能缺省，按 "message" 处理 */
@@ -286,6 +303,7 @@ export interface Message {
 }
 
 export interface SendMessageInput {
+  qa_card?: NewQACard;
   content: string;
   attachment_ids: ID[];
   reply_to?: ID;

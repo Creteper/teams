@@ -45,7 +45,11 @@ export function groupMessages(messages: Message[], windowMs = 5 * 60_000): Messa
 /** 按 seq 合并去重并保持正序 */
 export function mergeMessages(prev: Message[], incoming: Message[]): Message[] {
   const map = new Map(prev.map((m) => [m.id, m]));
-  for (const m of incoming) map.set(m.id, m);
+  for (const m of incoming) {
+    const existing = map.get(m.id);
+    if (m.qa_card && (existing?.deleted || (existing?.qa_card?.revision ?? -1) > m.qa_card.revision)) continue;
+    map.set(m.id, m);
+  }
   return [...map.values()].sort((a, b) => a.seq - b.seq);
 }
 

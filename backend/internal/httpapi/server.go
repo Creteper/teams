@@ -18,6 +18,7 @@ import (
 	"github.com/creteper/teams/backend/internal/auth"
 	"github.com/creteper/teams/backend/internal/config"
 	"github.com/creteper/teams/backend/internal/netguard"
+	"github.com/creteper/teams/backend/internal/pushrelay"
 	"github.com/creteper/teams/backend/internal/ratelimit"
 	"github.com/creteper/teams/backend/internal/realtime"
 	"github.com/creteper/teams/backend/internal/secretbox"
@@ -58,6 +59,9 @@ func New(cfg *config.Config, pool *pgxpool.Pool, store storage.Storage) (*Server
 	s.hookClient = netguard.NewClient(netguard.Options{Timeout: cfg.WebhookTimeout, AllowPrivate: cfg.AllowInsecureLocal, RequireHTTPS: true, MaxRedirects: 0})
 	s.fetch = netguard.NewClient(netguard.Options{Timeout: cfg.AvatarFetchTimeout, AllowPrivate: cfg.AllowInsecureLocal, RequireHTTPS: false, MaxRedirects: 3})
 	s.push = newPusher(cfg.VAPIDPublicKey, cfg.VAPIDPrivateKey, cfg.VAPIDSubject, cfg.AllowInsecureLocal)
+	if cfg.PushRelayURL != "" {
+		s.push.client = pushrelay.Client{Direct: s.push.client, URL: cfg.PushRelayURL, Token: cfg.PushRelayToken}
+	}
 	s.worker = &webhook.Worker{
 		Pool: pool, Box: box, Client: s.hookClient, Build: s.buildDeliveryPayload,
 		Delays: cfg.WebhookRetryDelays, Poll: cfg.WebhookPollInterval, Workers: cfg.WebhookWorkers,

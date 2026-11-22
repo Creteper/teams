@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/creteper/teams/backend/internal/netguard"
 )
 
 type Config struct {
@@ -45,6 +47,8 @@ type Config struct {
 	VAPIDPublicKey  string
 	VAPIDPrivateKey string
 	VAPIDSubject    string
+	PushRelayURL    string
+	PushRelayToken  string
 	// Argon2 parameters (tests lower these).
 	Argon2Time    uint32
 	Argon2MemKiB  uint32
@@ -198,6 +202,14 @@ func FromLookup(lookup func(string) (string, bool)) (*Config, error) {
 	c.VAPIDSubject = get("TEAMS_VAPID_SUBJECT", "")
 	if err := c.validateVAPID(); err != nil {
 		errs = append(errs, err)
+	}
+	c.PushRelayURL = get("TEAMS_PUSH_RELAY_URL", "")
+	c.PushRelayToken = get("TEAMS_PUSH_RELAY_TOKEN", "")
+	if c.PushRelayURL != "" || c.PushRelayToken != "" {
+		u, err := netguard.ValidateURL(c.PushRelayURL, true, false)
+		if err != nil || u.RawQuery != "" || u.Fragment != "" || len(c.PushRelayToken) < 32 {
+			errs = append(errs, errors.New("set TEAMS_PUSH_RELAY_URL to the HTTPS relay endpoint and TEAMS_PUSH_RELAY_TOKEN to a secret of at least 32 characters"))
+		}
 	}
 	if c.WebhookWorkers < 1 {
 		c.WebhookWorkers = 1

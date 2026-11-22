@@ -52,6 +52,18 @@ func (s *Server) routes() {
 	h("POST "+v+"/channels/{channel_id}/read", userOnly, s.markRead)
 	h("PUT "+v+"/channels/{channel_id}/pin", userOnly, s.setPin(true))
 	h("DELETE "+v+"/channels/{channel_id}/pin", userOnly, s.setPin(false))
+	h("GET "+v+"/me/issues", userOnly, s.listMyIssues)
+	h("GET "+v+"/teams/{team_id}/issues", anyAuth, s.listTeamIssues)
+	h("POST "+v+"/teams/{team_id}/issues", anyAuth, s.createIssue)
+	h("GET "+v+"/teams/{team_id}/issues/{issue_id}", anyAuth, s.getIssue)
+	h("POST "+v+"/teams/{team_id}/issues/{issue_id}/archive", anyAuth, s.archiveIssue)
+	h("PATCH "+v+"/teams/{team_id}/issues/{issue_id}", anyAuth, s.updateIssueProperty)
+	h("PATCH "+v+"/teams/{team_id}/issues/{issue_id}/description", anyAuth, s.updateIssueDescription)
+	h("GET "+v+"/teams/{team_id}/issues/{issue_id}/comments", anyAuth, s.listIssueComments)
+	h("POST "+v+"/teams/{team_id}/issues/{issue_id}/comments", userOnly, s.createIssueComment)
+	h("GET "+v+"/teams/{team_id}/issue-options", anyAuth, s.listIssueOptions)
+	h("POST "+v+"/teams/{team_id}/issue-options", userOnly, s.createIssueOption)
+	h("POST "+v+"/teams/{team_id}/issue-attachments", anyAuth, s.uploadIssueAttachment)
 	h("GET "+v+"/me/unread", userOnly, s.getMyUnread)
 
 	h("GET "+v+"/channels/{channel_id}/messages", anyAuth, s.listMessages)
@@ -60,6 +72,7 @@ func (s *Server) routes() {
 	h("GET "+v+"/messages/{message_id}", anyAuth, s.getMessage)
 	h("PATCH "+v+"/messages/{message_id}", anyAuth, s.editMessage)
 	h("DELETE "+v+"/messages/{message_id}", anyAuth, s.deleteMessage)
+	h("PUT "+v+"/messages/{message_id}/qa-answer", anyAuth, s.answerQA)
 	h("POST "+v+"/messages/{message_id}/decline", botOnly, s.declineMessage)
 
 	h("POST "+v+"/teams/{team_id}/attachments", anyAuth, s.uploadAttachment)
@@ -70,6 +83,7 @@ func (s *Server) routes() {
 
 	h("POST "+v+"/teams/{team_id}/bots", userOnly, s.createBot)
 	h("GET "+v+"/teams/{team_id}/bots", anyAuth, s.listBots)
+	h("PUT "+v+"/bots/me/issue-webhook", botOnly, s.setIssueWebhook)
 	h("GET "+v+"/bots/me", botOnly, s.getBotMe)
 	h("GET "+v+"/bot/me", botOnly, s.getBotMe)
 	h("PATCH "+v+"/bots/me", botOnly, s.patchBotMe)
@@ -145,7 +159,7 @@ func (s *Server) Cleanup(ctx context.Context) {
 			s.store.Delete(ctx, k)
 		}
 	}
-	del(`DELETE FROM attachments WHERE message_id IS NULL AND created_at < now() - interval '24 hours' RETURNING storage_key`)
+	del(`DELETE FROM attachments WHERE message_id IS NULL AND issue_id IS NULL AND created_at < now() - interval '24 hours' RETURNING storage_key`)
 	del(`DELETE FROM avatars a WHERE created_at < now() - interval '1 hour'
 		AND NOT EXISTS (SELECT 1 FROM users WHERE avatar_id=a.id)
 		AND NOT EXISTS (SELECT 1 FROM teams WHERE icon_avatar_id=a.id)

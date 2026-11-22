@@ -39,6 +39,14 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("MessageList", () => {
+  it("Markdown 内的提及保留高亮，代码里的提及保留原文", () => {
+    const content = "**收到 <@a>**\n下一行 `<@b>`";
+    render(<MessageList messages={[msg("md", 1, { content })]} members={members} myMemberId="a" channel={channel} />);
+    const message = screen.getByTestId("message-content");
+    expect(message.querySelector("strong .message-mention.self")?.textContent).toBe("@Alice");
+    expect(message.querySelector("code")?.textContent).toBe("<@b>");
+    expect(message.textContent).toContain("\n下一行");
+  });
   it("bot_declined 显示为触发消息下方的灰色系统行（带理由），不单独成一条消息", () => {
     const list = [msg("m1", 1, { content: "<@b> 订会议室" }), msg("d1", 2, { kind: "bot_declined", sender: bot, reply_to: "m1", content: "不在服务范围" })];
     const { container } = render(<MessageList messages={list} members={members} myMemberId="a" channel={channel} />);

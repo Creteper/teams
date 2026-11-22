@@ -1,6 +1,7 @@
+import { IssueIcon } from "./issues/IssueIcon";
 import { errorText } from "../lib/errorText";
 import { useState } from "react";
-import { Link } from "react-router";
+import { Link, NavLink } from "react-router";
 import { Button, Description, Dropdown, Input, Label, Separator, Tooltip } from "@heroui/react";
 import type { Channel, Team, User } from "../api/types";
 import { MemberAvatar } from "./MemberAvatar";
@@ -244,6 +245,10 @@ export function ChannelSidebar({
         </ul>
       </div>
 
+      {team && <NavLink to={`/teams/${team.id}/issues`} className={({ isActive }) =>
+        `mx-2 mb-2 flex items-center gap-2 rounded px-2 py-2 text-sm font-medium ${isActive ? "bg-[#404249] text-white" : "text-[#b5bac1] hover:bg-[#35373c] hover:text-white"}`}>
+        <IssueIcon size={17} /> Issues
+      </NavLink>}
       <div className="relative flex h-[52px] items-center gap-2 bg-[#232428] px-2">
         <Tooltip delay={300}>
           <Button

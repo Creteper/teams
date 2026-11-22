@@ -221,6 +221,7 @@ func loadChannel(ctx context.Context, q querier, id string) (*channelView, error
 // ---------- bots ----------
 
 type webhookView struct {
+	IssuesEnabled    bool    `json:"issues_enabled"`
 	URL              string  `json:"url"`
 	Enabled          bool    `json:"enabled"`
 	SecretHeaderName *string `json:"secret_header_name"`
@@ -246,7 +247,7 @@ type botView struct {
 
 const botSelect = `SELECT b.id, b.member_id, b.team_id, b.name, b.display_name, b.description, b.avatar_id,
 	b.avatar_source_url, b.avatar_shape, b.avatar_color, b.created_at,
-	w.url, w.enabled, w.secret_header_name, (w.secret_header_value_enc IS NOT NULL), w.updated_at
+	w.url, w.enabled, coalesce(w.issues_enabled,false), w.secret_header_name, (w.secret_header_value_enc IS NOT NULL), w.updated_at
 	FROM bots b LEFT JOIN bot_webhooks w ON w.bot_id = b.id `
 
 func scanBots(rows pgx.Rows) ([]botView, error) {
@@ -255,14 +256,15 @@ func scanBots(rows pgx.Rows) ([]botView, error) {
 		var av *string
 		var created time.Time
 		var wURL, wHeader *string
+		var issuesEnabled bool
 		var wEnabled, wSet *bool
 		var wUpdated *time.Time
 		err := r.Scan(&b.ID, &b.MemberID, &b.TeamID, &b.Name, &b.DisplayName, &b.Description, &av,
-			&b.AvatarSourceURL, &b.AvatarShape, &b.AvatarColor, &created, &wURL, &wEnabled, &wHeader, &wSet, &wUpdated)
+			&b.AvatarSourceURL, &b.AvatarShape, &b.AvatarColor, &created, &wURL, &wEnabled, &issuesEnabled, &wHeader, &wSet, &wUpdated)
 		b.AvatarURL = avatarURL(av)
 		b.CreatedAt = jsTime(created)
 		if wURL != nil {
-			b.Webhook = &webhookView{URL: *wURL, Enabled: *wEnabled, SecretHeaderName: wHeader, SecretHeaderSet: *wSet, UpdatedAt: jsTime(*wUpdated)}
+			b.Webhook = &webhookView{IssuesEnabled: issuesEnabled, URL: *wURL, Enabled: *wEnabled, SecretHeaderName: wHeader, SecretHeaderSet: *wSet, UpdatedAt: jsTime(*wUpdated)}
 		}
 		return b, err
 	})
@@ -314,6 +316,7 @@ type attachmentView struct {
 }
 
 type messageView struct {
+	QACard       *qaCard          `json:"qa_card,omitempty"`
 	ID           string           `json:"id"`
 	Seq          int64            `json:"seq"`
 	Kind         string           `json:"kind"`
@@ -365,7 +368,7 @@ func (s *Server) loadMessages(ctx context.Context, q querier, ids []string) ([]m
 		return []messageView{}, nil
 	}
 	rows, err := q.Query(ctx, `SELECT id, seq, kind, team_id, channel_id, sender_member_id, content, reply_to, trigger_depth,
-		created_at, edited_at, deleted_at FROM messages WHERE id = ANY($1::uuid[])`, ids)
+		created_at, edited_at, deleted_at, qa_card FROM messages WHERE id = ANY($1::uuid[])`, ids)
 	if err != nil {
 		return nil, err
 	}
@@ -380,7 +383,7 @@ func (s *Server) loadMessages(ctx context.Context, q querier, ids []string) ([]m
 		var created time.Time
 		var edited, deleted *time.Time
 		err := r.Scan(&x.v.ID, &x.v.Seq, &x.v.Kind, &x.v.TeamID, &x.v.ChannelID, &x.sender, &x.v.Content, &x.v.ReplyTo,
-			&x.v.TriggerDepth, &created, &edited, &deleted)
+			&x.v.TriggerDepth, &created, &edited, &deleted, &x.v.QACard)
 		x.v.CreatedAt = jsTime(created)
 		x.v.EditedAt = tp(edited)
 		x.v.Deleted = deleted != nil
@@ -388,6 +391,7 @@ func (s *Server) loadMessages(ctx context.Context, q querier, ids []string) ([]m
 		x.v.Attachments = []attachmentView{}
 		if x.v.Deleted {
 			x.v.Content = ""
+			x.v.QACard = nil
 		}
 		byID[x.v.ID] = &x
 		memberIDs[x.sender] = true

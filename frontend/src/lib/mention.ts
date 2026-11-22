@@ -53,7 +53,7 @@ export function insertMention(text: string, start: number, caret: number, name: 
  * 把输入框文本里已选成员的 `@名字` 转成 `<@member_id>`（名字长的优先，避免前缀冲突）。
  * 返回线上格式正文和被 @ 的 id（去重、按首次出现顺序）。
  */
-export function serializeMentions(text: string, picked: MentionCandidate[]): { content: string; mentionIds: string[] } {
+export function serializeMentions(text: string, picked: MentionCandidate[], allowAt?: (offset: number) => boolean): { content: string; mentionIds: string[] } {
   const targets = [...new Map(picked.map((p) => [p.id, p])).values()].sort((a, b) => b.name.length - a.name.length);
   let out = "";
   const ids: string[] = [];
@@ -61,7 +61,7 @@ export function serializeMentions(text: string, picked: MentionCandidate[]): { c
   while (i < text.length) {
     if (text[i] === "@" && canStartMention(text, i)) {
       const hit = targets.find((t) => text.startsWith(`@${t.name}`, i));
-      if (hit) {
+      if (hit && (!allowAt || allowAt(i))) {
         out += `<@${hit.id}>`;
         if (!ids.includes(hit.id)) ids.push(hit.id);
         i += hit.name.length + 1;

@@ -76,6 +76,10 @@ export default function App() {
           </RequireAuth>
         }
       />
+      <Route path="/issues/archive" element={<RequireAuth><TeamsPage issues /></RequireAuth>} />
+      <Route path="/teams/:teamId/issues/archive" element={<RequireAuth><TeamPage issues /></RequireAuth>} />
+      <Route path="/issues" element={<RequireAuth><TeamsPage issues /></RequireAuth>} />
+      <Route path="/teams/:teamId/issues" element={<RequireAuth><TeamPage issues /></RequireAuth>} />
       <Route path="*" element={<Navigate to="/teams" replace />} />
     </Routes>
   );

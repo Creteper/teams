@@ -56,6 +56,14 @@ func sanitizeFileName(n string) string {
 
 // uploadAttachment handles POST /teams/{team_id}/attachments (streaming).
 func (s *Server) uploadAttachment(w http.ResponseWriter, r *http.Request) error {
+	return s.receiveAttachment(w, r, false)
+}
+
+func (s *Server) uploadIssueAttachment(w http.ResponseWriter, r *http.Request) error {
+	return s.receiveAttachment(w, r, true)
+}
+
+func (s *Server) receiveAttachment(w http.ResponseWriter, r *http.Request, issueFile bool) error {
 	teamID, a, err := s.teamIDParam(r)
 	if err != nil {
 		return err
@@ -86,11 +94,11 @@ func (s *Server) uploadAttachment(w http.ResponseWriter, r *http.Request) error 
 			part.Close()
 			continue
 		}
-		return s.storeAttachment(ctx, w, teamID, a.MemberID, part.FileName(), part)
+		return s.storeAttachment(ctx, w, teamID, a.MemberID, part.FileName(), part, issueFile)
 	}
 }
 
-func (s *Server) storeAttachment(ctx context.Context, w http.ResponseWriter, teamID, memberID, fileName string, src io.Reader) error {
+func (s *Server) storeAttachment(ctx context.Context, w http.ResponseWriter, teamID, memberID, fileName string, src io.Reader, issueFile bool) error {
 	br := bufio.NewReaderSize(src, 4096)
 	head, _ := br.Peek(512)
 	if len(head) == 0 {
@@ -98,6 +106,9 @@ func (s *Server) storeAttachment(ctx context.Context, w http.ResponseWriter, tea
 	}
 	mt := media.Sniff(head)
 	kind := media.Classify(mt)
+	if issueFile && kind == "" {
+		kind, mt = "file", "application/octet-stream"
+	}
 	if kind == "" {
 		return apierr.Unsupported("不支持的文件类型: "+mt).With("detected", mt)
 	}
@@ -189,7 +200,11 @@ func (s *Server) attachmentContent(w http.ResponseWriter, r *http.Request) error
 	h := w.Header()
 	h.Set("Content-Type", mt)
 	h.Set("X-Content-Type-Options", "nosniff")
-	h.Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": name}))
+	disposition := "inline"
+	if mt == "application/octet-stream" || q.Get("download") == "1" {
+		disposition = "attachment"
+	}
+	h.Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": name}))
 	h.Set("Cache-Control", "private, max-age=3600")
 	http.ServeContent(w, r, "", st.ModTime(), f)
 	return nil

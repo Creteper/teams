@@ -1,6 +1,6 @@
 ---
 name: teams-bot-integration
-description: 当需要把 AI（含 Grok Bot）自动接入 TeAms、配置 webhook、用 bot 令牌查看或发送消息，或判断某个接口该不该调用时使用。
+description: 当需要把 AI（含 Grok Bot）自动接入 TeAms、配置 webhook、收发或回答 QA 卡片、订阅 Issues webhook、用 bot 令牌收发消息、创建、读取、修改或归档团队 Issue，或判断某个接口该不该调用时使用。
 ---
 
 # 把 AI 接入 TeAms
@@ -94,6 +94,8 @@ curl -s -X PUT "$BASE/api/v1/bots/<bot_id>/webhook" \
 - `secret_header_value` **任何接口都不回显**，只返回 `secret_header_set`。
 - 首次创建时响应里会带一次 `signing_secret`（`whsec_…`），自建接收端校验 `X-TeAms-Signature` 时用；之后只能轮换。走 Grok Bot 任务时，主要靠上面的 `Authorization: Bearer <SENDER_KEY>` 鉴权。
 
+首次接入时，询问用户「是否让这个 Agent 接收本 Team 的 Issues webhook（创建、修改、评论和归档）？」可用频道时优先发送绑定该用户的 QA 卡片。等用户明确选择开启后，用 bot 令牌调用 `PUT /api/v1/bots/me/issue-webhook`，发送 `{"enabled":true}`。用户选择关闭时传 `false`。订阅默认关闭，事件发到本 bot 已配置的 webhook。
+
 ### 2.4 测试
 
 1. `POST /api/v1/bots/{bot_id}/webhook/test`（用户会话）。返回 `"ok": true, "status_code": 200` 说明接收端收到了 `ping`（应直接忽略，见第 6 节）。`result` 为错误分类，如 `http_500` / `timeout` / `blocked_address` / `network_error`。
@@ -104,7 +106,7 @@ curl -s -X PUT "$BASE/api/v1/bots/<bot_id>/webhook" \
 
 ## 3. Webhook 载荷
 
-触发条件：消息的 `mentions` 里有该 bot，且不是它 @ 自己。编辑消息**不**触发。普通未 @ 的消息也不会推过来（若要监听全部消息，用 WebSocket，见接口表；默认的 @ 回复流程不需要）。
+消息提及事件的触发条件：消息的 `mentions` 里有该 bot，且不是它 @ 自己。编辑消息**不**触发。普通未 @ 的消息也不会推过来（若要监听全部消息，用 WebSocket，见接口表；默认的 @ 回复流程不需要）。
 
 ```
 POST <webhook url>
@@ -124,7 +126,7 @@ Authorization: Bearer <SENDER_KEY>            （若已按 2.3 配置）
 
 签名算法：`hex(HMAC-SHA256(signing_secret, timestamp + "." + raw_body))`。自建接收端应校验签名，并拒绝时间戳偏差大于 5 分钟的请求。
 
-**顶层字段顺序固定**：`event`、`delivery_id`、`sent_at`、`loop_guard`、`sender`、`channel`、`message`、`reply`、`team`、`bot`。`message` 里 `id`、`seq`、`reply_to`、`trigger_depth` 排在正文前面。JSON 不做 HTML 转义（`<@id>` 原样输出）。即便正文很长被接收端截断，也能先看到是谁发的、消息 id 是什么；关键信息同时在 `X-TeAms-*` 请求头里。
+**message.mention 的顶层字段顺序固定**：`event`、`delivery_id`、`sent_at`、`loop_guard`、`sender`、`channel`、`message`、`reply`、`team`、`bot`。`message` 里 `id`、`seq`、`reply_to`、`trigger_depth` 排在正文前面。JSON 不做 HTML 转义（`<@id>` 原样输出）。即便正文很长被接收端截断，也能先看到是谁发的、消息 id 是什么；关键信息同时在 `X-TeAms-*` 请求头里。
 
 **`message` 里只有 `content_plain`，没有原始 `content`。** 正文读 `content_plain`；@ 了谁读 `message.mentions`（`member_id` / `type` / `display_name`）。需要原始 `<@member_id>` 文本时，用 bot 令牌调消息接口取。消息 REST 接口和 WebSocket 里的消息对象仍带 `content`，不受影响。
 
@@ -165,11 +167,12 @@ Authorization: Bearer <SENDER_KEY>            （若已按 2.3 配置）
 | 运行状态 | `GET /api/v1/channels/{channel_id}/bot-runs` | `?active=true` 为处理中；只返回 `{items}` | 计入 120 |
 | 上传附件 | `POST /api/v1/teams/{team_id}/attachments` | multipart `file`；图片 jpeg/png/gif/webp ≤ 10 MB，视频 mp4/webm/mov ≤ 100 MB | **不计入** 120 |
 | 附件元数据 / 批量刷新签名 | `GET /api/v1/attachments/{id}`、`POST /api/v1/attachments/urls` | 后者 body `{ "ids": ["…"] }`，1–100 个 | GET 计入 120；POST urls **不计入** |
+| 团队 Issue | 见 §4.2 的 Issue、选项和附件接口 | 创建、读取、修改、归档和查看归档 | GET 计入 120 |
 | WebSocket | `GET /api/v1/ws` | 请求头带 bot 令牌；自动订阅自己的 team。客户端约每 25 秒 `{"type":"ping"}` | **不计入** 120 |
 
 120 次/分钟是滑动窗口，按 bot 计（同一 bot 的所有令牌共用），计入**所有 GET**以及编辑 / 删除消息。超出 → `429 rate_limited`，带 `Retry-After`（秒，向上取整，最小 1）。公开的 `GET /attachments/{id}/content`、`GET /avatars/{id}`、`GET /healthz` 不计入。
 
-bot **不能**：建 / 改 / 删频道，标记已读，置顶，收浏览器推送，配 webhook，改别人角色，访问别的 team。
+bot **不能**：建 / 改 / 删频道，标记已读，置顶，收浏览器推送，更改 webhook 地址或密钥，改别人角色，访问别的 team。
 
 ### 4.1 从文件读令牌的调用示例
 
@@ -236,9 +239,51 @@ curl -s -X POST "$BASE/api/v1/messages/<message.id>/decline" \
 
 ---
 
+### 4.2 创建、读取、修改和归档 Issue
+
+用 `GET /api/v1/bots/me` 返回的 `team.id` 构造团队路径 `T=/api/v1/teams/{team_id}`。以下请求沿用 §4.1 的 Bearer 令牌。服务端会把创建人记为当前 bot 的团队成员身份。
+
+| 任务 | 请求 | 使用返回值 |
+|---|---|---|
+| 找 Issue | `GET T/issues`，已归档用 `GET T/issues?archived=true` | 从 `items` 按标题和团队核对目标，后续用 `id` |
+| 查看详情与讨论 | `GET T/issues/{id}` 和 `GET T/issues/{id}/comments` | 标题、描述为 Markdown 源文。评论的 `root_id` 与 `reply_to_id` 标识回复关系 |
+| 查看选项 | `GET T/issue-options` | 从 `kind=status` 或 `label` 的选项取精确名称。分配人从成员列表取 `member.id` |
+| 创建 | `POST T/issues` | 生成一个 UUID，同一次创建的重试复用它。成功返回 201 和 Issue 对象 |
+| 修改属性 | `PATCH T/issues/{id}` | 每次提交一个字段，保存成功返回更新后的 Issue |
+| 修改描述 | `PATCH T/issues/{id}/description` | 传 `{"previous":"刚读到的原文","description":"新 Markdown"}`，成功返回 204。遇到 409 重新读取后处理冲突 |
+| 归档 | `POST T/issues/{id}/archive`，无需请求体 | 返回的 `archived_at` 为归档时间，重复请求保留原时间 |
+
+创建请求示例（将示例 UUID 替换为本次创建的 ID，先确认团队有对应状态）：
+
+```json
+{"id":"97b51d32-c0e1-40b7-b660-ee927f7fe502","title":"验收 **移动端** 布局","description":"检查窄屏下的导航。","status":"待处理","priority":"none"}
+```
+
+创建时可加 `labels`（名称数组）、`assignee_id`、`start_date`、`end_date`（YYYY-MM-DD）和 `attachment_ids`。上传用 `POST T/issue-attachments` 的 multipart 字段 `file`，取响应的 `id`。
+
+属性请求示例为 `{"field":"title","value":"修复 **移动端** 导航"}`。`status`、`add_label`、`remove_label` 的 `value` 是选项名称，`priority` 取 `none|urgent|high|medium|low`，`assignee` 取成员 ID 或 `null`。`schedule` 同时提交两端，如 `{"field":"schedule","start_date":null,"end_date":"2026-12-01"}`。
+
+归档后仍可按 ID 查看详情、评论和回复。下载 Issue 或评论附件时，用其 `id` 请求 `GET /api/v1/attachments/{id}` 获取最新签名 URL。已归档 Issue 只读，修改返回 409。
+
+### 4.3 用 QA 卡片向人或另一个 Agent 提问
+
+需要对方选择、确认或补充信息时，优先使用 QA 卡片。先确认回答人的团队 `member_id`，把相关问题合并到同一张卡。向 `POST /api/v1/channels/{channel_id}/messages` 提交：
+
+```json
+{"client_msg_id":"<本次请求的幂等键>","qa_card":{"recipient_member_id":"<member_id>","questions":[{"prompt":"采用哪个发布窗口？","options":["今天","明天"]},{"prompt":"有什么补充要求？","options":[]}]}}
+```
+
+每题最多四个自定义选项，按数组顺序对应 A–D。系统追加「其他」，支持自填。回复已有消息时同时传 `reply_to`，沿用提及的防循环规则。
+
+收到 `message.mention` 且 `message.qa_card.recipient_member_id` 是自己的成员 ID 时，使用 `PUT /api/v1/messages/{message_id}/qa-answer` 原位答题。题号从 0 开始。选择用 `{"question":0,"choice":"A"}`，自填用 `{"question":1,"choice":"other","text":"需保留回滚窗口"}`。读取响应中的 `qa_card.questions`，从第一道尚未回答的题继续，直到每题都有答案。只有人类回答人可以用 `skip`。重复调用遇到 409 时重读卡片进度。
+
+发送卡片的 Agent 可以接收 `qa.answered`。按 `delivery_id` 去重，根据 `data.message_id` 读取原消息，按 `data.revision` 识别进度，`data.complete` 表示每题均已处理。频道成员也可通过 `message.updated` 实时查看。
+
+收到 `issue.created`、`issue.updated`、`issue.commented` 或 `issue.archived`，用 `team.id` 和 `data.issue_id` 调 §4.2 的详情接口。评论事件另带 `data.comment_id`。按 `delivery_id` 去重，按用户安排处理，防止自己的 Issue 修改反复触发修改。
+
 ## 5. 什么时候应该调用
 
-被 @ 之后，按这个顺序做：
+普通消息被 @ 后按下面的顺序处理。QA 卡片和 Issues 事件走 §4.3。
 
 1. **先看事件和防循环。** `event` 为 `ping` 就结束。若发送者是 bot，且 `message.trigger_depth` ≥ 4（或 ≥ `loop_guard.max_trigger_depth + 1`，默认上限是 3），不要回复、也不要 decline，直接结束。
 2. **需要上下文时再拉历史。** 用 `GET /channels/{channel_id}/messages?before=<message.seq>&limit=N`（可直接用 `reply.history.url`，N ≤ 100）。一次被 @ 通常拉 1–2 页就够。触发消息里的 `reply_to` 若有值，再 `GET /messages/{id}` 把那条读出来。不要把上下文写进 webhook 配置，载荷里也不会带。

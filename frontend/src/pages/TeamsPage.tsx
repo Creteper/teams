@@ -1,3 +1,4 @@
+import { IssueBoard } from "../components/issues/IssueBoard";
 import { Button } from "@heroui/react";
 import { useState } from "react";
 import { Link, useNavigate } from "react-router";
@@ -13,11 +14,11 @@ import { roleLabel } from "../lib/roles";
 import { SettingsDialog } from "../components/settings/SettingsDialog";
 
 /** Team 列表 + 创建 + 通过邀请链接加入 */
-export default function TeamsPage() {
+export default function TeamsPage({ issues = false }: { issues?: boolean }) {
   const token = useToken();
   const { user } = useAuth();
   const navigate = useNavigate();
-  const { teams, loading, reload } = useTeams(token);
+  const { teams, loading, reload } = useTeams(token, user?.id);
   const [dialog, setDialog] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const onCreated = async (team: { id: string }) => {
@@ -28,7 +29,7 @@ export default function TeamsPage() {
   return (
     <div className="flex h-full bg-[#313338] text-[#dbdee1]">
       <TeamRail teams={teams} onAdd={() => setDialog(true)} />
-      <main className="flex-1 overflow-y-auto p-8">
+      {issues && user ? <IssueBoard token={token} me={user} teams={teams} /> : <main className="flex-1 overflow-y-auto p-8">
         <div className="mx-auto max-w-4xl">
           <div className="mb-8 flex items-center justify-between">
             <div className="flex items-center gap-4">
@@ -88,7 +89,7 @@ export default function TeamsPage() {
             </section>
           </div>
         </div>
-      </main>
+      </main>}
       {dialog ? <TeamDialog token={token} onClose={() => setDialog(false)} onDone={onCreated} /> : null}
       {settingsOpen ? <SettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
     </div>

@@ -546,6 +546,7 @@ func (s *Server) putWebhook(w http.ResponseWriter, r *http.Request) error {
 	}
 	var body struct {
 		URL               string    `json:"url"`
+		IssuesEnabled     *bool     `json:"issues_enabled"`
 		Enabled           *bool     `json:"enabled"`
 		SecretHeaderName  optString `json:"secret_header_name"`
 		SecretHeaderValue optString `json:"secret_header_value"`
@@ -604,12 +605,12 @@ func (s *Server) putWebhook(w http.ResponseWriter, r *http.Request) error {
 	}
 	var newSecret string
 	if exists {
-		_, err = s.pool.Exec(ctx, `UPDATE bot_webhooks SET url=$2, enabled=$3, secret_header_name=$4, secret_header_value_enc=$5, updated_at=now() WHERE bot_id=$1`,
-			b.ID, u.String(), enabled, name, val)
+		_, err = s.pool.Exec(ctx, `UPDATE bot_webhooks SET url=$2, enabled=$3, secret_header_name=$4, secret_header_value_enc=$5, issues_enabled=coalesce($6,issues_enabled), updated_at=now() WHERE bot_id=$1`,
+			b.ID, u.String(), enabled, name, val, body.IssuesEnabled)
 	} else {
 		newSecret = newSigningSecret()
-		_, err = s.pool.Exec(ctx, `INSERT INTO bot_webhooks(bot_id, url, enabled, secret_header_name, secret_header_value_enc, signing_secret_enc) VALUES($1,$2,$3,$4,$5,$6)`,
-			b.ID, u.String(), enabled, name, val, s.box.Seal([]byte(newSecret)))
+		_, err = s.pool.Exec(ctx, `INSERT INTO bot_webhooks(bot_id, url, enabled, secret_header_name, secret_header_value_enc, signing_secret_enc,issues_enabled) VALUES($1,$2,$3,$4,$5,$6,coalesce($7,false))`,
+			b.ID, u.String(), enabled, name, val, s.box.Seal([]byte(newSecret)), body.IssuesEnabled)
 	}
 	if err != nil {
 		return err
@@ -723,4 +724,24 @@ func (s *Server) listDeliveries(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	return writeList(w, items, nil, false)
+}
+
+func (s *Server) setIssueWebhook(w http.ResponseWriter, r *http.Request) error {
+	var in struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := decodeJSON(r, &in); err != nil {
+		return err
+	}
+	if in.Enabled == nil {
+		return apierr.Validation("enabled", "请指定是否订阅 Issues")
+	}
+	tag, err := s.pool.Exec(r.Context(), "UPDATE bot_webhooks SET issues_enabled=$2,updated_at=now() WHERE bot_id=$1", principalFrom(r.Context()).Bot.ID, *in.Enabled)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return apierr.NotFound("请先配置 bot webhook")
+	}
+	return writeJSON(w, http.StatusOK, map[string]bool{"issues_enabled": *in.Enabled})
 }

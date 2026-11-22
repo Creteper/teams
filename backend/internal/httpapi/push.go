@@ -29,7 +29,7 @@ const (
 	maxPushSubsUser  = 20
 )
 
-// pusher sends Web Push (RFC 8030/8291/8292) notifications for @mentions.
+// pusher sends Web Push (RFC 8030/8291/8292) notifications for channel messages.
 type pusher struct {
 	enabled    bool
 	publicKey  string
@@ -224,7 +224,7 @@ func excerpt(m *messageView, n int) string {
 
 func buildPushPayload(m *messageView, teamName, channelName string) pushPayload {
 	return pushPayload{
-		Type:    "mention",
+		Type:    "message",
 		Tag:     "msg-" + m.ID,
 		Team:    pushRef{ID: m.TeamID, Name: teamName},
 		Channel: pushRef{ID: m.ChannelID, Name: channelName},
@@ -234,20 +234,11 @@ func buildPushPayload(m *messageView, teamName, channelName string) pushPayload 
 	}
 }
 
-// notifyMentions pushes a new message to the browsers of mentioned users
-// (asynchronously; never blocks the request). Bots, the sender itself and
-// non-"message" kinds are skipped.
-func (s *Server) notifyMentions(m *messageView, channelName string) {
+// notifyTeamMembers pushes a new channel message to subscribed human members
+// of the team (asynchronously; never blocks the request). The sender, bots
+// and non-"message" kinds are skipped.
+func (s *Server) notifyTeamMembers(m *messageView, channelName string) {
 	if !s.push.enabled || m.Kind != "message" || m.Deleted {
-		return
-	}
-	var targets []string
-	for _, mm := range m.Mentions {
-		if mm.Type == "user" && mm.MemberID != m.Sender.MemberID {
-			targets = append(targets, mm.MemberID)
-		}
-	}
-	if len(targets) == 0 {
 		return
 	}
 	s.push.wg.Add(1)
@@ -255,43 +246,64 @@ func (s *Server) notifyMentions(m *messageView, channelName string) {
 		defer s.push.wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
-		s.sendMentionPushes(ctx, m, channelName, targets)
+		s.sendTeamPushes(ctx, m, channelName)
 	}()
 }
 
-type pushSub struct{ ID, Endpoint, P256dh, Auth string }
+type pushSub struct {
+	ID, Endpoint, P256dh, Auth, MemberID string
+}
 
-func (s *Server) sendMentionPushes(ctx context.Context, m *messageView, channelName string, memberIDs []string) {
-	rows, err := s.pool.Query(ctx, `SELECT ps.id, ps.endpoint, ps.p256dh, ps.auth FROM push_subscriptions ps
+func (s *Server) sendTeamPushes(ctx context.Context, m *messageView, channelName string) {
+	rows, err := s.pool.Query(ctx, `SELECT ps.id, ps.endpoint, ps.p256dh, ps.auth, tm.id FROM push_subscriptions ps
 		JOIN team_members tm ON tm.user_id = ps.user_id
-		WHERE tm.id = ANY($1::uuid[]) AND tm.type = 'user' AND tm.left_at IS NULL`, memberIDs)
+		JOIN sessions se ON se.id = ps.session_id AND se.expires_at > now()
+		JOIN channels c ON c.team_id = tm.team_id AND c.id = $1 AND c.deleted_at IS NULL
+		WHERE tm.team_id = $2 AND tm.join_seq < $3 AND tm.type = 'user' AND tm.left_at IS NULL AND tm.id <> $4`, m.ChannelID, m.TeamID, m.Seq, m.Sender.MemberID)
 	if err != nil {
 		slog.Error("push: load subscriptions", "err", err)
 		return
 	}
 	subs, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (pushSub, error) {
 		var x pushSub
-		err := r.Scan(&x.ID, &x.Endpoint, &x.P256dh, &x.Auth)
+		err := r.Scan(&x.ID, &x.Endpoint, &x.P256dh, &x.Auth, &x.MemberID)
 		return x, err
 	})
 	if err != nil || len(subs) == 0 {
 		return
 	}
 	var teamName string
-	if err := s.pool.QueryRow(ctx, `SELECT name FROM teams WHERE id=$1`, m.TeamID).Scan(&teamName); err != nil {
+	if err := s.pool.QueryRow(ctx, `SELECT name FROM teams WHERE id=$1 AND deleted_at IS NULL`, m.TeamID).Scan(&teamName); err != nil {
 		return
 	}
-	body, err := json.Marshal(buildPushPayload(m, teamName, channelName))
+	payload := buildPushPayload(m, teamName, channelName)
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return
 	}
+	mentioned := make(map[string]bool, len(m.Mentions))
+	for _, mention := range m.Mentions {
+		mentioned[mention.MemberID] = true
+	}
+	var mentionBody []byte
+	if len(mentioned) > 0 {
+		payload.Type = "mention"
+		mentionBody, err = json.Marshal(payload)
+		if err != nil {
+			return
+		}
+	}
 	var wg sync.WaitGroup
 	for _, sub := range subs {
+		data := body
+		if mentioned[sub.MemberID] {
+			data = mentionBody
+		}
 		wg.Add(1)
 		s.push.sem <- struct{}{}
 		go func() {
 			defer func() { <-s.push.sem; wg.Done() }()
-			s.sendPush(ctx, sub, body)
+			s.sendPush(ctx, sub, data)
 		}()
 	}
 	wg.Wait()

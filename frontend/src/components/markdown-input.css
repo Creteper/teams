@@ -1,0 +1,46 @@
+.live-markdown { min-width: 0; }
+.live-markdown .cm-editor { height: 100%; }
+.live-markdown .cm-editor.cm-focused { outline: none; }
+.live-markdown .cm-scroller { overflow: auto; font-family: inherit; line-height: inherit; }
+.live-markdown .cm-content { padding: 0; min-width: 0; caret-color: currentColor; }
+.live-markdown .cm-line { padding: 0; }
+.live-markdown .cm-placeholder { color: #949ba4; pointer-events: none; }
+.md-heading, .md-strong { font-weight: 700; }
+.md-em { font-style: italic; }
+.md-link { color: var(--color-brand-light); text-decoration: underline; }
+.md-code, .md-empty-code, .message-markdown :not(pre) > code {
+  font-family: ui-monospace, monospace;
+  border-radius: .3em;
+  background: #212226;
+  color: #e1dbff;
+}
+.md-code, .message-markdown :not(pre) > code { padding-inline: .2em; }
+.md-empty-code { color: #c9c2eb; box-shadow: inset 0 0 0 1px #656272; }
+.message-markdown.issue-markdown { color: inherit; }
+.message-markdown :is(p, li, h1, h2, h3, h4, h5, h6) { white-space: pre-wrap; }
+.message-mention { border-radius: .25rem; padding: 0 .25rem; background: var(--color-brand-soft); color: var(--color-brand-light); }
+.message-mention.self { background: #f0b2324d; color: #f0b232; }
+.chat-input { min-width: 0; flex: 1; line-height: 24px; font-size: 15px; margin-block: 4px; }
+.chat-input .cm-scroller { max-height: 96px; }
+.chat-input .cm-placeholder { display: inline-block; max-width: 100%; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; vertical-align: top; }
+.chat-expanded-input { flex: 1; min-height: 0; padding: .75rem; border-radius: .5rem; background: #313338; font-size: 15px; line-height: 1.6; }
+.chat-expanded-input > div, .chat-expanded-input .live-markdown { height: 100%; }
+.chat-input .md-code, .chat-input .md-empty-code { line-height: 1; }
+
+.live-markdown .md-marker { color: #aba6bd; }
+.live-markdown .md-block {
+  background: #222328;
+  box-shadow: inset 2px 0 #615a85;
+  padding-inline: .65rem;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  color: #e2e0eb;
+}
+.live-markdown .md-code-info { color: #b7aecf; }
+.live-markdown .md-quote-line { box-shadow: inset 2px 0 #747082; padding-inline-start: .6em; }
+.md-block .md-token-keyword { color: #c9a8ff; }
+.md-block .md-token-string { color: #abd6a0; }
+.md-block .md-token-number { color: #efb887; }
+.md-block .md-token-comment { color: #a1a6b3; font-style: italic; }
+.md-block .md-token-name { color: #97c9ff; }
+
+.live-markdown .md-rule { background: linear-gradient(#555861, #555861) left center / 100% 1px no-repeat; }

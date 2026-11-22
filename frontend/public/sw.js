@@ -8,7 +8,7 @@ function notificationFromPayload(p) {
   const channel = p && p.channel && p.channel.name ? `#${p.channel.name}` : "";
   const team = (p && p.team && p.team.name) || "TeAms";
   return {
-    title: `${sender} 在 ${team} ${channel} @了你`.replace(/\s+/g, " ").trim(),
+    title: `${sender} 在 ${team} ${channel} ${p?.type === "mention" ? "@了你" : "发了新消息"}`.replace(/\s+/g, " ").trim(),
     options: {
       body: (p && p.message && p.message.excerpt) || "",
       tag: (p && p.tag) || undefined,
@@ -27,9 +27,9 @@ async function handlePush(event) {
   } catch {
     payload = null;
   }
-  if (!payload || payload.type !== "mention") {
+  if (!payload || (payload.type !== "mention" && payload.type !== "message")) {
     // 规范要求 userVisibleOnly：收到推送必须显示点什么
-    return self.registration.showNotification("TeAms", { body: "你有新的 @ 消息", data: { url: "/teams" } });
+    return self.registration.showNotification("TeAms", { body: "你有新的频道消息", data: { url: "/teams" } });
   }
   const n = notificationFromPayload(payload);
   return self.registration.showNotification(n.title, n.options);

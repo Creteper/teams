@@ -97,7 +97,7 @@ func subCount(t *testing.T, endpoint string) int {
 	return n
 }
 
-func TestPushOnMention(t *testing.T) {
+func TestChannelMessagePush(t *testing.T) {
 	e := newEnv(t, withVAPID(t))
 	a, b, c := e.newUser(), e.newUser(), e.newUser()
 	tm := e.newTeam(a)
@@ -119,6 +119,15 @@ func TestPushOnMention(t *testing.T) {
 	// re-subscribing the same endpoint is an upsert
 	e.must(200, "POST", "/api/v1/push/subscriptions", b.Token, subB.json())
 
+	rcC := newReceiver(t, func(int) int { return 201 })
+	subC := newBrowserSub(t, rcC.ts.URL+"/push/c")
+	e.must(201, "POST", "/api/v1/push/subscriptions", c.Token, subC.json())
+	other := e.newTeam(a)
+	e.send(a.Token, other.GeneralID, map[string]any{"content": "another team"})
+	e.srv.push.wg.Wait()
+	if rcA.count()+rcB.count()+rcC.count() != 0 {
+		t.Fatal("message crossed team boundary or notified its own sender")
+	}
 	long := strings.Repeat("长", 150)
 	m := e.send(a.Token, tm.GeneralID, map[string]any{"content": "<@" + bMember + "> <@" + bt.MemberID + "> " + long})
 	e.srv.push.wg.Wait()
@@ -142,18 +151,22 @@ func TestPushOnMention(t *testing.T) {
 		t.Fatalf("excerpt: %q", ex)
 	}
 
-	// self-mention: no push; no mention: no push; edits do not push
+	if rcC.count() != 1 || subC.decrypt(t, rcC.get(0).Body)["type"] != "message" {
+		t.Fatal("unmentioned teammate should receive an ordinary channel notification")
+	}
+	e.must(204, "DELETE", "/api/v1/teams/"+tm.ID+"/members/me", c.Token, nil)
+	// Other active members receive each new message once, including self-mentions by the sender.
 	m2 := e.send(a.Token, tm.GeneralID, map[string]any{"content": "<@" + tm.MemberID + "> note to self"})
 	e.send(a.Token, tm.GeneralID, map[string]any{"content": "plain"})
 	e.must(200, "PATCH", "/api/v1/messages/"+m2["id"].(string), a.Token, map[string]any{"content": "<@" + bMember + "> edited"})
 	e.srv.push.wg.Wait()
-	if rcA.count() != 0 || rcB.count() != 1 {
+	if rcA.count() != 0 || rcB.count() != 3 || rcC.count() != 1 {
 		t.Fatalf("unexpected pushes: a=%d b=%d", rcA.count(), rcB.count())
 	}
 	// a bot mentioning a user does push; bots themselves are never push targets
 	e.send(bt.Token, tm.GeneralID, map[string]any{"content": "<@" + bMember + "> done"})
 	e.srv.push.wg.Wait()
-	if rcB.count() != 2 {
+	if rcB.count() != 4 || rcA.count() != 1 || rcC.count() != 1 {
 		t.Fatalf("bot->user push: %d", rcB.count())
 	}
 

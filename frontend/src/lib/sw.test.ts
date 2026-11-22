@@ -49,6 +49,12 @@ describe("Service Worker（public/sw.js）", () => {
       data: { url: "/teams/t1/channels/c1?msg=m1" },
     });
   });
+  it("普通频道消息在当前频道打开时同样提醒", async () => {
+    const { self, sw } = loadSw([{ url: "http://localhost:5190/teams/t1/channels/c1", focused: true }]);
+    await sw.handlePush({ data: { json: () => ({ ...payload, type: "message" }) } });
+    expect(self.registration.showNotification).toHaveBeenCalledWith("Bob 在 开发组 #general 发了新消息",
+      expect.objectContaining({ tag: payload.tag, data: { url: payload.url } }));
+  });
   it("解析失败也要显示通用通知（userVisibleOnly）", async () => {
     const { self, sw } = loadSw();
     await sw.handlePush({ data: { json: () => { throw new Error("bad"); } } });

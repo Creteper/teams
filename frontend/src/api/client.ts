@@ -1,3 +1,4 @@
+import type { IssuesApi } from "./issues";
 import type {
   AddMemberInput,
   Attachment,
@@ -30,6 +31,7 @@ import type {
   ReadyData,
   RegisterInput,
   SendMessageInput,
+  QAAnswer,
   ServerFrame,
   Team,
   User,
@@ -39,7 +41,7 @@ import type {
  * 页面只依赖这个接口，不关心是 mock 还是真实后端（VITE_USE_MOCK 切换）。
  * 每个方法注释里写了对应的 docs/api.md 接口。
  */
-export interface TeamsApi {
+export interface TeamsApi extends IssuesApi {
   /** POST /api/v1/auth/register */
   register(input: RegisterInput): Promise<AuthResponse>;
   /** POST /api/v1/auth/login */
@@ -111,6 +113,7 @@ export interface TeamsApi {
   /** GET /api/v1/channels/{channel_id}/messages?limit&before|after（items 按 seq 升序） */
   listMessages(token: string, channelId: ID, query?: MessagePageQuery): Promise<Page<Message>>;
   /** POST /api/v1/channels/{channel_id}/messages */
+  answerQA(token: string, messageId: ID, input: QAAnswer & { question: number }): Promise<Message>;
   sendMessage(token: string, channelId: ID, input: SendMessageInput): Promise<Message>;
 
   /** POST /api/v1/teams/{team_id}/attachments（multipart，字段 file）；支持进度和取消 */

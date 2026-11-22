@@ -1,5 +1,6 @@
-import { Link } from "react-router";
-import { Badge, Button } from "@heroui/react";
+import { IssueIcon } from "./issues/IssueIcon";
+import { Link, NavLink } from "react-router";
+import { Badge, Button, Separator } from "@heroui/react";
 import type { Team } from "../api/types";
 import { Logo } from "./Logo";
 import { TeamIcon } from "./TeamIcon";
@@ -94,10 +95,17 @@ export function TeamRail({
               aria-label="创建 Team"
               className="h-12 w-12 min-w-12 rounded-[24px] bg-[#313338] text-2xl font-normal text-[#23a55a] transition-all hover:rounded-2xl hover:bg-[#23a55a] hover:text-white data-[hovered=true]:bg-[#23a55a]"
             >
-              +
+              <IssueIcon name="plus" size={24} />
             </Button>
         </RailTooltip>
       </div>
+      <Separator className="my-1 h-0.5 w-8 shrink-0 rounded bg-[#35363c]" />
+      <RailTooltip text="我的 Issues">
+        {(props) => <NavLink {...props} to="/issues" aria-label="我的 Issues" className={({ isActive }) =>
+          `flex size-12 shrink-0 items-center justify-center rounded-2xl transition-colors ${isActive ? "bg-brand text-white" : "bg-[#313338] text-[#b5bac1] hover:bg-[#404249] hover:text-white"}`}>
+          <IssueIcon size={23} />
+        </NavLink>}
+      </RailTooltip>
     </nav>
   );
 }

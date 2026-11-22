@@ -1,7 +1,8 @@
+import { IssueBoard } from "../components/issues/IssueBoard";
 import { errorText } from "../lib/errorText";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams, useSearchParams } from "react-router";
-import { CloseButton, Spinner } from "@heroui/react";
+import { Button, CloseButton, Spinner } from "@heroui/react";
 import { api, fetchAllMembers, realtime } from "../api";
 import type { Channel, Member, Message, Team } from "../api/types";
 import { useAuth, useToken } from "../auth/AuthContext";
@@ -31,12 +32,12 @@ import { optimisticRoleChange, syncMyRole, upsertMember, type RoleAction } from 
 import type { Attachment, MessageSender } from "../api/types";
 
 /** Team 主界面（Discord 式四栏）：team 图标栏 | 频道侧栏 | 消息区 | 成员列表 */
-export default function TeamPage() {
+export default function TeamPage({ issues = false }: { issues?: boolean }) {
   const { teamId = "", channelId } = useParams();
   const token = useToken();
   const { user, syncUser } = useAuth();
   const navigate = useNavigate();
-  const { teams, reload: reloadTeams } = useTeams(token);
+  const { teams, reload: reloadTeams } = useTeams(token, user?.id);
   const [searchParams] = useSearchParams();
   /** 通知 / 链接里的 ?msg=<message_id>：定位并高亮（§9.4） */
   const msgParam = searchParams.get("msg");
@@ -46,6 +47,9 @@ export default function TeamPage() {
   const goneRef = useRef(goneAttachments);
   goneRef.current = goneAttachments;
   const unread = useUnread({ token, teams, teamId, viewingChannelId: channelId });
+  const [showChannels, setShowChannels] = useState(false);
+  const channelToggle = useRef<HTMLButtonElement>(null);
+  useEffect(() => { setShowChannels(false); }, [channelId, teamId, issues]);
   const { seed: seedUnread, markRead } = unread;
 
   const [team, setTeam] = useState<Team | null>(null);
@@ -178,7 +182,7 @@ export default function TeamPage() {
         if (!found && !cancelled) setChannelNotice("要定位的消息不存在、已被删除，或不在这个频道里");
       }
       if (cancelled) return;
-      setMessages(items);
+      setMessages(prev => mergeMessages(items, prev.filter(m => m.channel_id === channelId)));
       setHasMore(more);
       setOlderCursor(cursor);
       if (msgParam && found) setHighlightId(msgParam);
@@ -254,7 +258,13 @@ export default function TeamPage() {
   // 断线重连后用 after=<seq> 补拉（docs/api.md §8.3）
   useEffect(() => {
     if (!channelId) return;
-    return realtime.onReady(() => {
+    let active = true;
+    const unsubscribe = realtime.onReady(() => {
+      for (const message of messagesRef.current.filter(m => m.qa_card && m.channel_id === channelId)) {
+        void api.getMessage(token, message.id).then(updated => {
+          if (active) setMessages(prev => mergeMessages(prev, [updated]));
+        }).catch(() => undefined);
+      }
       api
         .listActiveBotRuns(token, channelId)
         .then((items) => dispatchRuns({ type: "hydrate", items, now: Date.now() }))
@@ -262,9 +272,10 @@ export default function TeamPage() {
       if (!maxSeqRef.current) return;
       api
         .listMessages(token, channelId, { after: maxSeqRef.current, limit: 100 })
-        .then((page) => setMessages((prev) => mergeMessages(prev, page.items)))
+        .then((page) => { if (active) setMessages((prev) => mergeMessages(prev, page.items)); })
         .catch(() => undefined);
     });
+    return () => { active = false; unsubscribe(); };
   }, [token, channelId]);
 
   // 实时推送
@@ -446,7 +457,7 @@ export default function TeamPage() {
   }
 
   if (!user) return null;
-  if (!channelId && channels.length > 0 && channels[0].team_id === teamId) {
+  if (!issues && !channelId && channels.length > 0 && channels[0].team_id === teamId) {
     const general = defaultChannel(channels) ?? channels[0];
     return <Navigate to={`/teams/${teamId}/channels/${general.id}`} replace />;
   }
@@ -468,43 +479,55 @@ export default function TeamPage() {
     .sort((a, b) => a.startedAt - b.startedAt);
 
   return (
-    <div className="flex h-full overflow-hidden bg-[#313338] text-[#dbdee1]">
+    <div className="relative flex h-full overflow-hidden bg-[#313338] text-[#dbdee1]">
       <TeamRail teams={teams} currentTeamId={teamId} onAdd={() => setDialogOpen(true)} unread={unread.summary} />
-      <ChannelSidebar
-        team={team}
-        channels={channels}
-        currentChannelId={channelId}
-        me={user}
-        canManage={canManage}
-        onCreateChannel={async (name) => {
-          const c = await api.createChannel(token, teamId, { name });
-          setChannels((prev) => (prev.some((x) => x.id === c.id) ? prev : [...prev, c]));
-          navigate(`/teams/${teamId}/channels/${c.id}`);
-        }}
-        onInvite={() => setInviteOpen(true)}
-        onSettings={() => setSettingsOpen(true)}
-        onLeave={() => {
-          setConfirmError(null);
-          setConfirm("leave");
-        }}
-        onOpenSettings={(tab) => setSettings(tab ?? "")}
-        myMemberId={myMemberId}
-        unread={unread.map}
-        onChannelAction={(c, action) => {
-          if (action === "pin" || action === "unpin") {
-            unread.setPinned(c.id, action === "pin").catch((e: unknown) =>
-              setChannelNotice(`${action === "pin" ? "置顶" : "取消置顶"}失败：${errorText(e)}`),
-            );
-          } else if (action === "rename") setRenameTarget(c);
-          else if (action === "delete") {
-            setDeleteError(null);
-            setDeleteTarget(c);
-          }
-        }}
-      />
+      <div id="team-channel-sidebar" className={issues ? "flex" : `absolute inset-y-0 top-12 left-[72px] z-20 sm:static sm:z-auto sm:flex ${showChannels ? "flex shadow-xl" : "hidden"}`}
+        onClick={event => { if (showChannels && event.target instanceof Element && event.target.closest("a")) setShowChannels(false); }}
+        onKeyDown={event => { if (showChannels && event.key === "Escape" && !event.defaultPrevented) {
+          setShowChannels(false);
+          channelToggle.current?.focus();
+        } }}>
+        <ChannelSidebar
+          team={team}
+          channels={channels}
+          currentChannelId={channelId}
+          me={user}
+          canManage={canManage}
+          onCreateChannel={async (name) => {
+            const c = await api.createChannel(token, teamId, { name });
+            setChannels((prev) => (prev.some((x) => x.id === c.id) ? prev : [...prev, c]));
+            navigate(`/teams/${teamId}/channels/${c.id}`);
+          }}
+          onInvite={() => setInviteOpen(true)}
+          onSettings={() => setSettingsOpen(true)}
+          onLeave={() => {
+            setConfirmError(null);
+            setConfirm("leave");
+          }}
+          onOpenSettings={(tab) => setSettings(tab ?? "")}
+          myMemberId={myMemberId}
+          unread={unread.map}
+          onChannelAction={(c, action) => {
+            if (action === "pin" || action === "unpin") {
+              unread.setPinned(c.id, action === "pin").catch((e: unknown) =>
+                setChannelNotice(`${action === "pin" ? "置顶" : "取消置顶"}失败：${errorText(e)}`),
+              );
+            } else if (action === "rename") setRenameTarget(c);
+            else if (action === "delete") {
+              setDeleteError(null);
+              setDeleteTarget(c);
+            }
+          }}
+        />
+      </div>
 
-      <main className="flex min-w-0 flex-1 flex-col">
+      {issues ? (team?.id === teamId && !error ?
+        <IssueBoard key={teamId} token={token} me={user} teams={teams} team={team} /> :
+        <main className="p-4">{error || "正在加载…"}</main>
+      ) : <><main className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center gap-2 border-b border-black/30 px-4 shadow-sm">
+          <Button ref={channelToggle} className="sm:hidden" size="sm" variant="secondary"
+            aria-controls="team-channel-sidebar" aria-expanded={showChannels} onPress={() => setShowChannels(open => !open)}>频道</Button>
           <span className="text-2xl leading-none text-[#80848e]">#</span>
           <h1 className="font-semibold text-[#f2f3f5]">{channel?.name ?? "…"}</h1>
           {channel?.topic ? (
@@ -547,6 +570,10 @@ export default function TeamPage() {
               }}
               onDiscard={(localId) => dispatchSend({ type: "discard", local_id: localId })}
               highlightId={highlightId}
+              onAnswerQA={async (id,question,answer) => {
+                const msg=await api.answerQA(token,id,{question,...answer});
+                if (channelsRef.current.some(c=>c.id===msg.channel_id)) setMessages(prev=>prev.some(m=>m.id===id) ? mergeMessages(prev,[msg]) : prev);
+              }}
               goneAttachmentIds={goneAttachments}
             />
             {/* bot 状态区：消息列表和输入框之间单独一行，处于正常文档流；出现时列表通过 ResizeObserver 贴底 */}
@@ -563,6 +590,10 @@ export default function TeamPage() {
               onAutoFocused={() => setFocusComposerFor(null)}
               members={members.filter((m) => m.id !== myMemberId)}
               onUpload={(file, opts) => api.uploadAttachment(token, teamId, file, opts)}
+              onSendCard={async (card,clientId)=>{
+                const msg=await api.sendMessage(token,channel.id,{content:"",attachment_ids:[],qa_card:card,client_msg_id:clientId});
+                if (location.pathname.endsWith("/channels/"+msg.channel_id)) setMessages(prev=>mergeMessages(prev,[msg]));
+              }}
               onSend={({ content, attachments, mentionIds, previews }) => {
                 if (previews && Object.keys(previews).length) setLocalPreviews((prev) => ({ ...prev, ...previews }));
                 const item: OutboxItem = {
@@ -599,6 +630,8 @@ export default function TeamPage() {
         onDismissNotice={() => setRoleNotice(null)}
         onProfile={(m) => setProfileMemberId(m.id)}
       />
+
+      </>}
 
       {profileMemberId && members.some((m) => m.id === profileMemberId) ? (
         <MemberProfileDialog

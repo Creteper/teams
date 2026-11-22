@@ -56,7 +56,7 @@ async function newUser(label) {
 }
 const shot = (page, name) => page.screenshot({ path: `${SHOTS}/${name}.png` });
 const log = (page) => page.locator("[role=log][aria-live=polite].flex-1");
-const box = (page) => page.locator("textarea[aria-label=消息输入框]");
+const box = (page) => page.getByRole("textbox", { name: "消息输入框", exact: true });
 
 async function register(page, u) {
   await page.goto(`${BASE}/register`);

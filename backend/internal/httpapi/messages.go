@@ -101,6 +101,7 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	p := principalFrom(ctx)
 	var body struct {
+		QACard        *qaCard  `json:"qa_card"`
 		Content       string   `json:"content"`
 		AttachmentIDs []string `json:"attachment_ids"`
 		ReplyTo       *string  `json:"reply_to"`
@@ -108,6 +109,12 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) error {
 	}
 	if err := decodeJSON(r, &body); err != nil {
 		return err
+	}
+	if body.QACard != nil {
+		if err := body.QACard.validateNew(); err != nil {
+			return err
+		}
+		body.Content = "<@" + body.QACard.Recipient + "> QA 卡片 · " + body.QACard.Questions[0].Prompt
 	}
 	if err := validateContent(body.Content, len(body.AttachmentIDs)); err != nil {
 		return err
@@ -183,6 +190,12 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			return err
 		}
+		if card := body.QACard; card != nil {
+			if len(mentions) == 0 || mentions[0] != card.Recipient {
+				return apierr.Validation("recipient_member_id", "回答人必须是本团队的有效成员")
+			}
+			mentions = []string{card.Recipient}
+		}
 		// Serialize inserts per channel: the seq (identity) is drawn only after
 		// this row lock is held, and the lock is released at commit, so within a
 		// channel seq order == commit (visibility) order and after=<seq>
@@ -194,8 +207,8 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) error {
 			}
 			return err
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO messages(id, team_id, channel_id, sender_member_id, content, reply_to, trigger_depth, client_msg_id)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, msgID, c.TeamID, c.ID, a.MemberID, body.Content, replyTo, depth, clientID)
+		_, err = tx.Exec(ctx, `INSERT INTO messages(id, team_id, channel_id, sender_member_id, content, reply_to, trigger_depth, client_msg_id, qa_card)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, msgID, c.TeamID, c.ID, a.MemberID, body.Content, replyTo, depth, clientID, body.QACard)
 		if err != nil {
 			return err
 		}
@@ -208,7 +221,7 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) error {
 				ids = append(ids, id)
 			}
 			tag, err := tx.Exec(ctx, `UPDATE attachments SET message_id=$1 WHERE id = ANY($2::uuid[]) AND team_id=$3
-				AND uploader_member_id=$4 AND message_id IS NULL`, msgID, ids, c.TeamID, a.MemberID)
+				AND uploader_member_id=$4 AND message_id IS NULL AND issue_id IS NULL AND kind <> 'file'`, msgID, ids, c.TeamID, a.MemberID)
 			if err != nil {
 				return err
 			}
@@ -246,7 +259,7 @@ func (s *Server) sendMessage(w http.ResponseWriter, r *http.Request) error {
 			s.publishChannelRead(ctx, p.UserID, c.ID)
 		}
 	}
-	s.notifyMentions(m, c.Name)
+	s.notifyTeamMembers(m, c.Name)
 	for _, did := range completed {
 		s.hub.PublishTeam(c.TeamID, "bot.run.completed", runData(c.TeamID, c.ID, a.MemberID, replyToID, did, map[string]any{"reply_message_id": msgID}))
 	}
@@ -465,7 +478,7 @@ func (s *Server) editMessage(w http.ResponseWriter, r *http.Request) error {
 	if m.Deleted {
 		return apierr.NotFound("消息")
 	}
-	if m.Kind != "message" {
+	if m.Kind != "message" || m.QACard != nil {
 		return apierr.Forbidden("这类消息不能编辑")
 	}
 	var body struct {
@@ -605,6 +618,7 @@ type payloadMessage struct {
 	Mentions     []mentionView       `json:"mentions"`
 	Attachments  []payloadAttachment `json:"attachments"`
 	ContentPlain string              `json:"content_plain"`
+	QACard       *qaCard             `json:"qa_card,omitempty"`
 }
 
 type payloadReplyHint struct {
@@ -675,6 +689,17 @@ func (s *Server) buildDeliveryPayload(ctx context.Context, d webhook.Delivery) (
 	}
 	team := payloadTeam{ID: t.ID, Name: t.Name, IconURL: s.abs(t.IconURL)}
 	now := jsTime(time.Now())
+	if strings.HasPrefix(d.Event, "issue.") || d.Event == "qa.answered" {
+		if strings.HasPrefix(d.Event, "issue.") && (b.Webhook == nil || !b.Webhook.IssuesEnabled) {
+			return none, webhook.ErrDrop
+		}
+		var data json.RawMessage
+		if err := s.pool.QueryRow(ctx, "SELECT event_data FROM webhook_deliveries WHERE id=$1", d.ID).Scan(&data); err != nil {
+			return none, err
+		}
+		body, err := marshalPayload(map[string]any{"event": d.Event, "delivery_id": d.ID, "sent_at": now, "team": team, "bot": s.payloadBot(b), "data": data})
+		return webhook.Payload{Body: body}, err
+	}
 	if d.Event == "ping" || d.MessageID == nil {
 		body, err := marshalPayload(payloadPing{Event: "ping", DeliveryID: d.ID, SentAt: now, Team: team, Bot: s.payloadBot(b)})
 		return webhook.Payload{Body: body}, err
@@ -712,7 +737,7 @@ func (s *Server) buildDeliveryPayload(ctx context.Context, d webhook.Delivery) (
 		Sender: payloadSender{MemberID: sm.ID, Type: sm.Type, UserID: sm.UserID, BotID: sm.BotID, Username: sm.Username,
 			DisplayName: sm.DisplayName, AvatarURL: s.abs(sm.AvatarURL), AvatarShape: sm.AvatarShape, AvatarColor: sm.AvatarColor},
 		Channel: payloadChannel{ID: ch.ID, Name: ch.Name},
-		Message: payloadMessage{ID: m.ID, Seq: m.Seq, ReplyTo: m.ReplyTo, TriggerDepth: m.TriggerDepth, CreatedAt: m.CreatedAt,
+		Message: payloadMessage{QACard: m.QACard, ID: m.ID, Seq: m.Seq, ReplyTo: m.ReplyTo, TriggerDepth: m.TriggerDepth, CreatedAt: m.CreatedAt,
 			Mentions: mentions, Attachments: atts, ContentPlain: mention.Plain(m.Content, names)},
 		Reply: payloadReply{Method: "POST", URL: s.cfg.PublicBaseURL + "/api/v1/channels/" + ch.ID + "/messages",
 			Auth: "Authorization: Bearer <BOT_TOKEN>", BodyHint: payloadReplyHint{Content: "<@" + sm.ID + "> …", ReplyTo: m.ID},

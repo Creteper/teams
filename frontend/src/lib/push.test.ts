@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { Team, Message } from "../api/types";
 import type { TeamsApi } from "../api/client";
 import { ApiError } from "../api/errors";
-import { CHROME_GFW_HINT, PUSH_OWNER_KEY, base64UrlToBytes, detectPushSupport, disablePush, enablePush, pushErrorText, unsupportedText } from "./push";
+import { CHROME_GFW_HINT, PUSH_OWNER_KEY, base64UrlToBytes, currentPushState, detectPushSupport, disablePush, enablePush, notifyOnlineMessage, readNotificationLog, pushErrorText, unsupportedText } from "./push";
 
 const fakeSub = {
   endpoint: "https://fcm.googleapis.com/fcm/send/abc",
@@ -17,7 +18,7 @@ function installBrowser(opts: { permission: NotificationPermission; request?: No
       return fakeSub;
     }),
   };
-  const reg = { pushManager };
+  const reg = { pushManager, showNotification: vi.fn(async () => {}) };
   const requestPermission = vi.fn(async () => opts.request ?? opts.permission);
   vi.stubGlobal("Notification", Object.assign(function Notification() {}, { permission: opts.permission, requestPermission }));
   vi.stubGlobal("PushManager", function PushManager() {});
@@ -25,7 +26,7 @@ function installBrowser(opts: { permission: NotificationPermission; request?: No
     configurable: true,
     value: { register: vi.fn(async () => reg), ready: Promise.resolve(reg), getRegistration: vi.fn(async () => reg) },
   });
-  return { pushManager, requestPermission };
+  return { pushManager, requestPermission, reg };
 }
 
 const api = () => ({ subscribePush: vi.fn(async () => ({})), unsubscribePush: vi.fn(async () => {}) }) as unknown as TeamsApi & { subscribePush: ReturnType<typeof vi.fn>; unsubscribePush: ReturnType<typeof vi.fn> };
@@ -33,6 +34,7 @@ const api = () => ({ subscribePush: vi.fn(async () => ({})), unsubscribePush: vi
 afterEach(() => {
   vi.unstubAllGlobals();
   localStorage.clear();
+  sessionStorage.clear();
   // @ts-expect-error 测试清理
   delete navigator.serviceWorker;
 });
@@ -75,12 +77,12 @@ describe("enablePush / disablePush", () => {
     installBrowser({ permission: "default", request: "default" });
     await expect(enablePush(api(), "tok", "u1", "AQID")).rejects.toMatchObject({ kind: "dismissed" });
   });
-  it("浏览器订阅失败（如 FCM 不通）→ subscribe 错误，附 Chrome 国内提示，不 POST", async () => {
+  it("FCM 注册失败时保留已授权的在线提醒，不提交无效订阅", async () => {
     installBrowser({ permission: "granted", subscribeError: new Error("Registration failed - push service error") });
     const a = api();
-    const p = enablePush(a, "tok", "u1", "AQID");
-    await expect(p).rejects.toMatchObject({ kind: "subscribe" });
-    await expect(p).rejects.toThrow(/Google/);
+    expect(await enablePush(a, "tok", "u1", "AQID")).toBe("online");
+    expect((await currentPushState("u1")).on).toBe(true);
+    expect((await currentPushState("u2")).on).toBe(false);
     expect(a.subscribePush).not.toHaveBeenCalled();
   });
   it("503 push_disabled 原样抛出，由界面提示", async () => {
@@ -99,4 +101,21 @@ describe("enablePush / disablePush", () => {
     expect(fakeSub.unsubscribe).toHaveBeenCalled();
     expect(localStorage.getItem(PUSH_OWNER_KEY)).toBeNull();
   });
+});
+
+
+it("在线 @ 在系统接口返回后才记为已提交，错误留在当前账号的标签页日志", async () => {
+  const { reg } = installBrowser({ permission: "granted" });
+  localStorage.setItem(PUSH_OWNER_KEY, "u1");
+  const team = { id: "t", name: "团队", my_member_id: "me" } as Team;
+  const msg = { id: "m", team_id: "t", channel_id: "c", seq: 155, content: "private body",
+    sender: { member_id: "other", display_name: "Bob" }, mentions: [{ member_id: "me" }] } as Message;
+  reg.showNotification.mockRejectedValueOnce(new DOMException("failed", "NotAllowedError"));
+  await notifyOnlineMessage("u1", team, msg);
+  expect(readNotificationLog("u1")).toContain("NotAllowedError");
+  await notifyOnlineMessage("u1", team, msg);
+  expect(readNotificationLog("u1")).toContain("#155");
+  expect(readNotificationLog("u1")).toContain("浏览器已接受");
+  expect(readNotificationLog("u1")).not.toContain(msg.content);
+  expect(readNotificationLog("u2")).toBe("");
 });

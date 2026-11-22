@@ -150,7 +150,7 @@ export function SettingsDialog({ initialTab, onClose }: { initialTab?: SettingsT
                       userId={user.id}
                       hiddenFallback={
                         <div className="rounded-lg bg-[#2b2d31] p-4 text-sm text-[#949ba4]" data-testid="push-hidden">
-                          服务器没有开启网页推送，暂时不能设置 @ 消息通知。
+                          服务器没有开启网页推送，暂时不能设置频道消息通知。
                         </div>
                       }
                     />

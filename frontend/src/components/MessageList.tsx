@@ -1,7 +1,9 @@
+import { QACard } from "./QACard";
+import type { QAAnswer } from "../api/types";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button, Modal, Spinner } from "@heroui/react";
 import type { Attachment, Channel, Member, Message, MessageSender } from "../api/types";
-import { parseContent } from "../lib/mention";
+import { MessageMarkdown } from "./MessageMarkdown";
 import { attachDeclines, formatTime, groupMessages, isDeclined } from "../lib/messages";
 import { outboxAsMessage, type OutboxItem } from "../lib/outbox";
 import { useReducedMotion } from "./BotAvatar/useReducedMotion";
@@ -16,6 +18,7 @@ interface Row {
   seq: number;
   sender: MessageSender;
   created_at: string;
+  qaCard?: Message["qa_card"];
   content: string;
   deleted: boolean;
   attachments: Attachment[];
@@ -28,6 +31,7 @@ interface Row {
 
 function toRow(m: Message, keyOf: Record<string, string>, ob?: OutboxItem): Row {
   return {
+    qaCard: m.qa_card,
     declined: isDeclined(m),
     reply_to: m.reply_to,
     key: keyOf[m.id] ?? m.id,
@@ -53,6 +57,7 @@ export function MessageList({
   outbox = [],
   members,
   myMemberId,
+  onAnswerQA,
   channel,
   initialLoading = false,
   hasMore = false,
@@ -71,6 +76,7 @@ export function MessageList({
   outbox?: OutboxItem[];
   members: Member[];
   myMemberId: string;
+  onAnswerQA?(id:string,index:number,answer:QAAnswer):Promise<void>;
   channel: Channel;
   initialLoading?: boolean;
   hasMore?: boolean;
@@ -250,26 +256,15 @@ export function MessageList({
                   </div>
                 ) : null}
                 {row.deleted ? <p className="text-sm italic text-[#949ba4]">（消息已删除）</p> : null}
-                {!row.deleted && row.content ? (
-                  <p
-                    data-testid="message-content"
-                    className={`whitespace-pre-wrap break-words py-0.5 text-[15px] leading-relaxed ${ob?.status === "sending" ? "text-[#949ba4]" : "text-[#dbdee1]"}`}
-                  >
-                    {parseContent(row.content, (id) => row.mentionNames.get(id) ?? byId.get(id)?.display_name).map((part, k) =>
-                      part.type === "mention" ? (
-                        <span
-                          key={k}
-                          className={`rounded px-0.5 font-medium ${
-                            part.id === myMemberId ? "bg-[#f0b232]/30 text-[#f0b232]" : "bg-brand-soft text-brand-light"
-                          }`}
-                        >
-                          @{part.name}
-                        </span>
-                      ) : (
-                        <span key={k}>{part.text}</span>
-                      ),
-                    )}
-                  </p>
+                {!row.deleted && row.qaCard && <QACard card={row.qaCard}
+                  recipient={row.mentionNames.get(row.qaCard.recipient_member_id) ?? "成员"}
+                  onAnswer={row.messageId && row.qaCard.recipient_member_id===myMemberId && onAnswerQA
+                    ? (i,answer)=>onAnswerQA(row.messageId!,i,answer) : undefined}/>}
+                {!row.deleted && !row.qaCard && row.content ? (
+                  <div data-testid="message-content" className={`py-0.5 text-[15px] ${ob?.status === "sending" ? "text-[#949ba4]" : "text-[#dbdee1]"}`}>
+                    <MessageMarkdown text={row.content} myMemberId={myMemberId}
+                      mentionName={id => row.mentionNames.get(id) ?? byId.get(id)?.display_name} />
+                  </div>
                 ) : null}
                 {!row.deleted && row.attachments.length > 0 ? (
                   <div className="mt-1 flex flex-wrap gap-2 pb-0.5">

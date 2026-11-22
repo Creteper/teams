@@ -278,6 +278,9 @@ func (s *Server) createTeam(w http.ResponseWriter, r *http.Request) error {
 		if _, err := tx.Exec(ctx, `INSERT INTO teams(id, name, description, owner_user_id) VALUES($1,$2,$3,$4)`, teamID, name, desc, p.UserID); err != nil {
 			return err
 		}
+		if _, err := tx.Exec(ctx, `SELECT seed_issue_options($1)`, teamID); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `INSERT INTO team_members(id, team_id, type, user_id, role) VALUES($1,$2,'user',$3,'owner')`, memberID, teamID, p.UserID); err != nil {
 			return err
 		}

@@ -48,6 +48,10 @@ export async function request<T>(
   return (await res.json()) as T;
 }
 
+function issuePath(teamId: string, issueId: string) {
+  return `/teams/${encodeURIComponent(teamId)}/issues/${encodeURIComponent(issueId)}`;
+}
+
 export function createHttpApi(): TeamsApi {
   return {
     register: (input) => request("/auth/register", { method: "POST", body: input }),
@@ -56,6 +60,28 @@ export function createHttpApi(): TeamsApi {
     me: (token) => request("/me", { token }),
     updateMe: (token, input) => request("/me", { method: "PATCH", token, body: input }),
 
+    updateIssueProperty: (token, teamId, id, change) => request(issuePath(teamId, id), { method: "PATCH", token, body: change }),
+    updateIssueDescription: (token, teamId, id, description, previous) =>
+      request(issuePath(teamId, id) + "/description", { method: "PATCH", token, body: { description, previous } }),
+    listIssueComments: (token, teamId, id) => request(issuePath(teamId, id) + "/comments", { token }),
+    createIssueComment: (token, teamId, id, input) => request(issuePath(teamId, id) + "/comments", { method: "POST", token, body: input }),
+    issueAttachmentUrl: async (token, id) => {
+      const { url } = await request<{ url: string }>(`/attachments/${encodeURIComponent(id)}`, { token });
+      const download = new URL(API_BASE_URL + url, window.location.origin);
+      download.searchParams.set("download", "1");
+      return download.href;
+    },
+    getIssue: (token, teamId, id) => request(issuePath(teamId, id), { token }),
+    archiveIssue: (token, teamId, id) => request(issuePath(teamId, id) + "/archive", { method: "POST", token }),
+    listIssues: (token, teamId, archived) => request(teamId ? `/teams/${encodeURIComponent(teamId)}/issues` : "/me/issues", { token, query: { archived: archived ? "true" : undefined } }),
+    createIssue: (token, teamId, input) => request(`/teams/${encodeURIComponent(teamId)}/issues`, { method: "POST", token, body: input }),
+    listIssueOptions: (token, teamId) => request(`/teams/${encodeURIComponent(teamId)}/issue-options`, { token }),
+    createIssueOption: (token, teamId, option) => request(`/teams/${encodeURIComponent(teamId)}/issue-options`, { method: "POST", token, body: option }),
+    uploadIssueAttachment: (token, teamId, file) => {
+      const body = new FormData();
+      body.append("file", file);
+      return request(`/teams/${encodeURIComponent(teamId)}/issue-attachments`, { method: "POST", token, body });
+    },
     listTeams: (token) => request("/teams", { token }),
     createTeam: (token, input) => request("/teams", { method: "POST", token, body: input }),
     getTeam: (token, teamId) => request(`/teams/${encodeURIComponent(teamId)}`, { token }),
@@ -106,6 +132,7 @@ export function createHttpApi(): TeamsApi {
         token,
         query: { limit: query.limit, before: query.before, after: query.after },
       }),
+    answerQA: (token, id, input) => request(`/messages/${encodeURIComponent(id)}/qa-answer`, { method: "PUT", token, body: input }),
     sendMessage: (token, channelId, input) =>
       request(`/channels/${encodeURIComponent(channelId)}/messages`, { method: "POST", token, body: input }),
 

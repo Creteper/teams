@@ -1,7 +1,9 @@
 import { errorText } from "./errorText";
 import type { TeamsApi } from "../api/client";
 import { ApiError } from "../api/errors";
-import type { PushSubscriptionJSONBody } from "../api/types";
+import { countsAsUnread } from "./unread";
+import { toPlainText } from "./mention";
+import type { Message, Team, PushSubscriptionJSONBody } from "../api/types";
 
 /**
  * 浏览器推送（docs/api.md §9.4）：
@@ -71,45 +73,97 @@ export async function registerServiceWorker(): Promise<ServiceWorkerRegistration
   return navigator.serviceWorker.ready;
 }
 
-/** 当前浏览器是否已为该用户开启（权限已授予 + 存在订阅 + 记录的用户是本人） */
-export async function currentPushState(userId: string): Promise<{ on: boolean; permission: NotificationPermission }> {
+/** The owner flag also covers online notifications when the push provider is unreachable. */
+export async function currentPushState(userId: string) {
   const permission = Notification.permission;
-  if (permission !== "granted") return { on: false, permission };
-  const reg = await navigator.serviceWorker.getRegistration(SW_SCOPE);
-  const sub = reg ? await reg.pushManager.getSubscription() : null;
-  return { on: !!sub && localStorage.getItem(PUSH_OWNER_KEY) === userId, permission };
+  const reg = permission === "granted" && localStorage.getItem(PUSH_OWNER_KEY) === userId
+    ? await navigator.serviceWorker.getRegistration(SW_SCOPE) : undefined;
+  const sub = await reg?.pushManager.getSubscription().catch(() => null);
+  return { on: !!reg, permission, subscribed: !!sub };
 }
 
-/** 开启：请求权限（只在用户点击后调用）→ 注册 SW → 订阅 → POST 给服务端 */
-export async function enablePush(api: TeamsApi, token: string, userId: string, publicKey: string): Promise<void> {
+export const NOTIFICATION_LOG_EVENT = "teams:notification-log";
+
+export function readNotificationLog(userId: string): string {
+  try {
+    return sessionStorage.getItem("teams.notification-log." + userId) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function recordNotification(userId: string, seq: number, result: string) {
+  try {
+    const line = `${new Date().toLocaleTimeString("zh-CN", { hour12: false })}  #${seq}  ${result}`;
+    const recent = [line, ...readNotificationLog(userId).split("\n").filter(Boolean)].slice(0, 6);
+    sessionStorage.setItem("teams.notification-log." + userId, recent.join("\n"));
+    window.dispatchEvent(new Event(NOTIFICATION_LOG_EVENT));
+  } catch {
+    // Logging may be unavailable when the browser restricts storage.
+  }
+}
+
+export async function notifyOnlineMessage(userId: string, team: Team | undefined, m: Message): Promise<void> {
+  if (!countsAsUnread(m, team?.my_member_id)) return;
+  const log = (result: string) => recordNotification(userId, m.seq, result);
+  try {
+    if (localStorage.getItem(PUSH_OWNER_KEY) !== userId) return log("当前账号在此浏览器未开启提醒");
+    if (!team?.my_member_id || team.id !== m.team_id) return log("已收到消息，团队成员信息尚未就绪");
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return log("浏览器未授予通知权限");
+    const reg = await navigator.serviceWorker?.getRegistration(SW_SCOPE);
+    if (!reg) return log("未找到通知服务，请重新开启提醒");
+    if (localStorage.getItem(PUSH_OWNER_KEY) !== userId) return;
+    const body = toPlainText(m.content, id => m.mentions.find(x => x.member_id === id)?.display_name);
+    const action = m.mentions.some(x => x.member_id === team.my_member_id) ? "@了你" : "发了新消息";
+    // The same tag merges Web Push and online delivery for this message.
+    await reg.showNotification(`${m.sender.display_name} 在 ${team.name} ${action}`, {
+      tag: "msg-" + m.id, body: Array.from(body).slice(0, 100).join("") || "[附件]",
+      icon: m.sender.avatar_url || "/icons/icon-192.png", badge: "/icons/badge-72.png",
+      data: { url: `/teams/${m.team_id}/channels/${m.channel_id}?msg=${m.id}` },
+    });
+    log("浏览器已接受通知请求");
+  } catch (e) {
+    log("通知处理失败 · " + (e instanceof DOMException || e instanceof Error ? e.name : "UnknownError"));
+  }
+}
+
+export async function enablePush(api: TeamsApi, token: string, userId: string, publicKey: string): Promise<"push" | "online"> {
   const support = detectPushSupport();
   if (!support.ok) throw new PushSetupError("unsupported", unsupportedText(support.reason));
   let permission = Notification.permission;
   if (permission === "default") permission = await Notification.requestPermission();
   if (permission === "denied")
     throw new PushSetupError("denied", "通知权限已被拒绝。请点击地址栏左侧的站点信息图标，把「通知」改为允许后再试。");
-  if (permission !== "granted") throw new PushSetupError("dismissed", "你没有允许通知权限，@ 消息通知未开启。");
+  if (permission !== "granted") throw new PushSetupError("dismissed", "你没有允许通知权限，频道消息通知未开启。");
+  const reg = await registerServiceWorker();
   let sub: PushSubscription;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const reg = await registerServiceWorker();
-    sub =
-      (await reg.pushManager.getSubscription()) ??
-      (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64UrlToBytes(publicKey) }));
-  } catch (e) {
-    // 浏览器给的是英文原文（如 "Registration failed - push service error"），不展示
-    throw new PushSetupError("subscribe", `${e instanceof DOMException && e.name === "NotAllowedError" ? "浏览器拒绝了推送订阅" : "浏览器订阅推送失败"}。${CHROME_GFW_HINT}`);
+    const subscribe = async () => (await reg.pushManager.getSubscription()) ??
+      reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: base64UrlToBytes(publicKey) });
+    sub = await Promise.race([subscribe(), new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error("Push service timeout")), 8000);
+    })]);
+  } catch {
+    if (Notification.permission !== "granted") throw new PushSetupError("denied", "请先在浏览器站点设置中允许通知。");
+    localStorage.setItem(PUSH_OWNER_KEY, userId);
+    return "online";
+  } finally {
+    clearTimeout(timer);
   }
   const json = sub.toJSON() as PushSubscriptionJSONBody;
   await api.subscribePush(token, { endpoint: json.endpoint, expirationTime: json.expirationTime ?? null, keys: json.keys });
   localStorage.setItem(PUSH_OWNER_KEY, userId);
+  return "push";
 }
 
 /** 关闭：DELETE 服务端（query endpoint，总是 204）→ 浏览器退订 */
 export async function disablePush(api: TeamsApi, token: string): Promise<void> {
-  localStorage.removeItem(PUSH_OWNER_KEY);
   const reg = await navigator.serviceWorker.getRegistration(SW_SCOPE);
   const sub = reg ? await reg.pushManager.getSubscription() : null;
-  if (!sub) return;
-  await api.unsubscribePush(token, sub.endpoint);
-  await sub.unsubscribe().catch(() => false);
+  if (sub) {
+    await api.unsubscribePush(token, sub.endpoint);
+    await sub.unsubscribe().catch(() => false);
+  }
+  localStorage.removeItem(PUSH_OWNER_KEY);
 }

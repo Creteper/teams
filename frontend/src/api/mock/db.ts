@@ -25,6 +25,7 @@ export interface MockDb {
   attachments: Map<string, Attachment>;
   /** 已被消息引用的附件 id（§4.3：附件只能被引用一次） */
   usedAttachments: Set<string>;
+  issueFiles: Map<string, { teamId: string; file_name: string; url: string }>;
   /** 事件总线；audience 用于模拟“只发给某人 / 发给除某人外” */
   listeners: Set<(frame: ServerFrame, audience?: Audience) => void>;
   invites: Invite[];
@@ -484,6 +485,7 @@ export function createMockDb(): MockDb {
       [video.id, video],
       [broken.id, broken],
     ]),
+    issueFiles: new Map(),
     usedAttachments: new Set([img.id, video.id, broken.id]),
     botsWithWebhook: new Set([IDS.mHelper, IDS.mPlanner, IDS.mStar, IDS.mHelperOpen]),
     botDescriptions: new Map([

@@ -40,13 +40,17 @@ func (s *Server) declineMessage(w http.ResponseWriter, r *http.Request) error {
 	}
 	var teamID, channelID string
 	var deletedAt *time.Time
-	err = s.pool.QueryRow(ctx, `SELECT m.team_id, m.channel_id, m.deleted_at FROM messages m
-		JOIN channels c ON c.id = m.channel_id WHERE m.id=$1 AND c.deleted_at IS NULL`, triggerID).Scan(&teamID, &channelID, &deletedAt)
+	var hasCard bool
+	err = s.pool.QueryRow(ctx, `SELECT m.team_id, m.channel_id, m.deleted_at, m.qa_card IS NOT NULL FROM messages m
+		JOIN channels c ON c.id = m.channel_id WHERE m.id=$1 AND c.deleted_at IS NULL`, triggerID).Scan(&teamID, &channelID, &deletedAt, &hasCard)
 	if errors.Is(err, pgx.ErrNoRows) || (err == nil && (teamID != bp.TeamID || deletedAt != nil)) {
 		return apierr.NotFound("消息")
 	}
 	if err != nil {
 		return err
+	}
+	if hasCard {
+		return apierr.Forbidden("QA 卡片需要绑定 Agent 逐题作答")
 	}
 	var deliveryID, noteID string
 	created := false

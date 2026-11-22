@@ -209,6 +209,8 @@ journalctl -u teams -n 20 | grep -i "web push"   # 应看到 "web push enabled"
 - 推送由后端**出站**连浏览器厂商的推送服务：Chrome / 基于 Chromium 的浏览器是 `fcm.googleapis.com`，Firefox 是 `updates.push.services.mozilla.com`，Edge 是 `*.notify.windows.com`，Safari 是 `web.push.apple.com`。**阿里云北京的服务器通常连不上 FCM**（Chrome 用户在国内收不到推送，浏览器端本身也需要能连 Google 推送服务）；Edge / Firefox / Safari 一般可用。出站请求不走系统代理。上线后在服务器上 `curl -sS -m 5 -o /dev/null -w '%{http_code}\n' https://fcm.googleapis.com/` 可快速判断。
 - 不需要开放任何新端口，也不需要改 nginx（推送是后端主动出站）。前端的 Service Worker 文件需要由 nginx 按普通静态文件提供，且在站点根路径下（作用域覆盖 `/`）。
 
+北京 ECS 到 Chrome FCM 超时时，可配置香港函数计算中转。部署包、触发器、连通性验证和后端设置见[香港 FC 推送中转](push-relay-fc.md)。
+
 ### B.6 后端：二进制与 systemd
 
 在开发机（Mac）交叉编译：

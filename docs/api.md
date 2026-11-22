@@ -604,6 +604,7 @@ Delivery 对象：`{id, message_id, channel_id, event, status, attempts, last_st
 | `POST /api/v1/messages/{id}/decline` | 声明不回复（§7.7） |
 | `GET /api/v1/teams/{team_id}/members/{member_id}` | 单个成员资料 |
 | `POST /api/v1/teams/{team_id}/attachments`、`GET /api/v1/attachments/{id}`、`POST /api/v1/attachments/urls` | |
+| 所属团队的 Issue 列表、详情、创建、修改、归档、评论读取、选项读取和 Issue 附件上传 | 见 §8.8 |
 | `GET /api/v1/ws` | |
 
 其它接口 → 403。用法示例见 §8.6。
@@ -716,10 +717,10 @@ curl -s "$BASE/api/v1/teams/<team_id>/members/<member_id>" -H "$AUTH"
 ```json
 {
   "name": "teams-skill",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "install_command": "npx -y https://teams.lovekaifa.com/api/v1/downloads/teams-skill.tgz",
   "tgz_url": "https://teams.lovekaifa.com/api/v1/downloads/teams-skill.tgz",
-  "versioned_url": "https://teams.lovekaifa.com/api/v1/downloads/teams-skill-1.0.0.tgz",
+  "versioned_url": "https://teams.lovekaifa.com/api/v1/downloads/teams-skill-1.1.0.tgz",
   "skill_md_url": "https://teams.lovekaifa.com/api/v1/skill/SKILL.md",
   "sha256": "<tgz 的 sha256，hex>",
   "size_bytes": 12994,
@@ -748,6 +749,24 @@ npx -y https://teams.lovekaifa.com/api/v1/downloads/teams-skill.tgz --version   
 > **接口一改，就要同步更新 SKILL.md 并重新打包**：本文档里与 bot 相关的接口、字段、限流、webhook 载荷有任何变化，都要同时改 `backend/skill/teams-bot-integration/SKILL.md`、升 `backend/packages/teams-skill/package.json` 的版本号、`npm run dist` 重新生成 tgz 并一起提交（流程见 deploy.md「Bot 接入 skill 包」）。`go test ./skill/` 会在 SKILL.md 改了但没重新打包、或版本号不一致时失败。
 
 ---
+
+### 8.8 团队 Issue 与归档
+
+以下路径以 `/api/v1/teams/{team_id}` 为前缀。用户会话与该团队 bot 均可操作。跨团队请求返回 404。
+
+| 方法和路径 | 请求与响应 |
+|---|---|
+| `GET /issue-options` | 团队状态和标签的 `{kind,name,color}` 列表 |
+| `POST /issue-attachments` | multipart 字段 `file`，201 返回附件元数据 |
+| `POST /issues` | 必填 `id`（UUID）、`title`（1–240 字）、`status`（团队状态名）、`priority`（none、urgent、high、medium、low）。选填 Markdown `description`（最多 32000 字）、`labels`（标签名数组）、`assignee_id`（在职成员 ID 或 null）、`start_date/end_date`（YYYY-MM-DD 或 null）、`attachment_ids`。201 返回 Issue，同一创建人用原 ID 重试不会重复创建 |
+| `GET /issues` | 默认列出活动 Issue，`?archived=true` 只列归档 Issue，标准列表响应 |
+| `GET /issues/{id}` | 200 返回完整 Issue，包括 Markdown 标题和描述、创建人、分配人、状态、优先级、标签、排期、附件、创建时间及 `archived_at`（活动时为 null） |
+| `PATCH /issues/{id}` | `{field,value}` 支持 title、status、priority、assignee、add_label、remove_label。排期传 `{field:"schedule",start_date,end_date}`，两端可为 null。200 返回更新后的 Issue |
+| `PATCH /issues/{id}/description` | `{previous,description}`，成功 204。原文冲突返回 409 |
+| `GET /issues/{id}/comments` | 列出评论、回复及其附件，含 `root_id` 和 `reply_to_id` |
+| `POST /issues/{id}/archive` | 无需请求体，200 返回归档后的 Issue。重复调用保留首次归档时间 |
+
+用户会话另可用 `GET /api/v1/me/issues` 查看分配给自己的活动 Issue，`?archived=true` 查看个人归档。用户给活动 Issue 发评论或回复用 `POST /issues/{id}/comments`，传 `{id,body,reply_to_id,attachment_ids}`，成功返回 201。归档与写入串行化，归档后修改字段、描述、发评论或回复均返回 409。详情、讨论与附件继续按原团队权限读取。下载附件先取 `GET /api/v1/attachments/{id}`，向返回的签名 URL 添加 `download=1` 可按原文件名下载。
 
 ## 9. WebSocket
 
@@ -798,7 +817,9 @@ npx -y https://teams.lovekaifa.com/api/v1/downloads/teams-skill.tgz --version   
 
 ### 9.4 浏览器推送（Web Push，关掉网页也能收到）
 
-标准 Web Push（RFC 8030 / 8291 加密 / 8292 VAPID）。**只在用户被 @ 时推送**；自己 @ 自己不推；bot 不接收推送（bot @ 用户会推给该用户）；编辑消息、`bot_declined` 提示消息不推。服务器没配置 VAPID（§13）时推送关闭，其他功能不受影响。
+已开启通知的浏览器在 TeAms 页面保持连接时，也会根据实时消息显示本机通知。在线提醒和 Web Push 使用相同的消息 tag。Chrome 关闭全部 TeAms 页面后依赖服务器连通 FCM。
+
+标准 Web Push（RFC 8030 / 8291 加密 / 8292 VAPID）。频道有新消息时，向该 Team 中已订阅通知的其他在组用户发送提醒，包括正在查看该频道的人。真人和 bot 发出的普通消息均可触发。编辑消息、`bot_declined` 提示不触发推送。服务器没配置 VAPID（§13）时推送关闭，其他功能不受影响。
 
 | 方法 | 路径 | 权限 | 说明 |
 |---|---|---|---|
@@ -820,6 +841,7 @@ Service Worker 收到的 JSON（解密后）：
   "message": { "id": "…", "seq": 1025, "excerpt": "@Tina 帮我看一下这个接口…" },
   "url": "/teams/<team_id>/channels/<channel_id>?msg=<message_id>" }
 ```
+- `type` 为 `mention` 时表示接收者被 @，其他接收者收到 `message`。
 - `excerpt`：正文里的 `<@id>` 换成 `@显示名`，连续空白压成一个空格，超过 100 个字符（按 Unicode 字符，不切坏汉字）截断并加 `…`；只有附件没有文字时为 `"[附件]"`。
 - `url` 是前端路由的相对路径（`/teams/:teamId/channels/:channelId`，`msg` 为要定位的消息 id），点击通知时 `clients.openWindow(url)` / 聚焦已有窗口后导航过去。`tag` 可直接用作 `showNotification` 的 tag。`sender.avatar_url` 是相对路径（可空）。
 
@@ -915,3 +937,17 @@ IP 取连接地址；只有来自本机回环的请求（即 Caddy 反代）才�
 36. **webhook payload 的 `reply` 末尾新增 `history`**：`{ "method": "GET", "url": ".../channels/<channel_id>/messages?before=<message.seq>&limit=50" }`，即"拉触发消息之前的历史"的调用方式；`reply` 原有字段和顶层字段顺序不变。
 37. **bot 令牌请求限流**（§8.6、§11）：每个 bot 每分钟最多 120 次，计入 bot 令牌的所有 GET 请求和编辑 / 删除消息（`PATCH` / `DELETE /messages/{id}`）；超出返回 `429 rate_limited` + `Retry-After`（秒，向上取整）。发消息仍按每 bot 每频道 30 条/分钟单独计算、不占这 120 次；用户会话不受影响。之前文档写的"读取不限流"作废。
 38. **Bot 接入 skill 下载**（§8.7）：新增公开接口 `GET /api/v1/skill`（版本、`install_command`、`tgz_url`、`versioned_url`、`skill_md_url`、`sha256` 等；`?include=skill_md` 带原文）、`GET /api/v1/skill/SKILL.md`、`GET /api/v1/downloads/teams-skill.tgz`（固定地址，`no-cache`）和 `GET /api/v1/downloads/teams-skill-<version>.tgz`（`immutable`）。SKILL.md 与 npm 包 `teams-skill`（`npx -y <tgz 地址>` 写到 `./.cursor/skills/teams-bot-integration/SKILL.md`，支持 `--dir`、`--force`、`--help`、`--version`）go:embed 进后端二进制，随后端发布，不发布到 npm。路径都在 `/api/` 下，nginx 不用改。今后 bot 相关接口有变化时，必须同步更新 SKILL.md、升版本并重新打包。
+
+## QA 卡片和 Issues webhook
+
+`POST /api/v1/channels/{channel_id}/messages` 接受用户或 bot 令牌，`qa_card` 消息沿用 `client_msg_id` 幂等、`reply_to` 和 @ 通知。例子如下。
+
+```json
+{"qa_card":{"recipient_member_id":"<本团队成员 id>","questions":[{"prompt":"选择时间","options":["周一","周二"]},{"prompt":"补充说明","options":[]}]}}
+```
+
+卡片包含 1–64 道题，每题 0–4 个自定义选项（A–D），另有自填项 `other`。问题上限 500 字，选项上限 160 字，自填答案上限 2000 字。读取消息返回 `qa_card.revision` 和各题的可选 `answer`。提交答案会向团队广播包含最新卡片的 `message.updated`。
+
+`PUT /api/v1/messages/{message_id}/qa-answer` 接受 `{"question":0,"choice":"A"}`、`{"question":0,"choice":"other","text":"…"}` 或 `{"question":0,"choice":"skip"}`。仅绑定成员可写。真人可回填跳过的题；Agent 必须按顺序作答。成功返回完整消息，相同答案重试保持同一 revision。bot 发卡后，每次答案变动通过其 webhook 投递 `qa.answered`，`data` 含 message_id、channel_id、question、revision 和 complete。
+
+管理员配置 bot webhook 时可传布尔字段 `issues_enabled`。默认关闭，更新时省略保留原值。bot 可通过 `PUT /api/v1/bots/me/issue-webhook` 和 `{"enabled":true}` 或 `false` 修改自己的 Issues 订阅。事件 `issue.created`、`issue.updated`、`issue.commented`（含回复）和 `issue.archived` 复用已有签名和重试机制。载荷包含 event、delivery_id、sent_at、team、bot、data；用 data.issue_id 查阅详情，评论事件另有 data.comment_id。
